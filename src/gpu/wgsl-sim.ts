@@ -703,8 +703,12 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
       if (pulseSign < 0.0) {
         sw *= 1.0 - min(1.0, energy) * INBURST_RELAX;
       }
-      // Inside the predator column the wall's crowd pressure must not win.
-      sw *= 1.0 - predFall * PRED_SEP_RELAX;
+      // Crowd-pressure relief around the predator: inside the column the
+      // wall must not shove fish back in, and frightened fish near the
+      // threat shoulder through the crowd instead of jamming against
+      // personal space — at 20× density the panic wave has to move bodies.
+      let panicRelax = max(predFall, select(0.0, fearI, threatNear));
+      sw *= 1.0 - panicRelax * PRED_SEP_RELAX;
       acc += s * sw;
     }
 

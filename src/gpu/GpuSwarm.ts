@@ -890,7 +890,7 @@ export class GpuSwarm implements SwarmSystem {
     U[42] = Math.exp(-P.drag * dt);
     U[43] = Math.exp(-P.flashDecay * dt);
     U[44] = Math.exp(-P.fearDecay * dt);
-    U[45] = Math.min(1, P.fearSpread * dt);
+    U[45] = Math.min(1, P.fearSpread * GPU_TUNING.fearSpreadScale * dt);
     U[46] = Math.min(1, dt * 5);
     U[47] = P.transmission * GPU_TUNING.transmissionScale;
     U[48] = P.refractory * GPU_TUNING.refractoryScale;

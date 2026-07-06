@@ -96,15 +96,23 @@ rationale in place; user-facing sliders keep their v3 meaning throughout.
 - **Refractory re-derived** (`refractoryScale = 1.6`), per invariant §4.3's
   explicit instruction: the wave crosses the denser school ~1.5× slower,
   so the refractory wall scales to keep re-entry impossible.
-- **Predator-column crowd pressure** (`predatorSepRelax`): the dense wall
-  around the cleared column pushes fresh fish inward through pure
-  separation pressure; fish inside the danger zone relax their own
-  separation by `fall × 0.8` so evacuation isn't diffusion-jammed.
-  Two honest density effects remain: a mid-school park is still *clearing*
-  at the reference's 1.5 s mark (20× more bodies moving through each
-  other), and the long-park equilibrium leaks a rim shell ~3% of the
-  school at 6 s — newly measured at ~1.7% in the untouched v3, so a shared
-  trait scaled by crowd pressure, not a regression.
+- **Predator crowd pressure** (`predatorSepRelax`): two jams the reference
+  never felt at 20× density — the dense wall around the cleared column
+  pushes fresh fish inward through pure separation pressure, and the panic
+  wave can't *move* bodies (fleeing fish stall against personal space).
+  Fish relax their own separation by `max(column falloff, fear while the
+  threat is near) × 0.8`, so evacuation isn't diffusion-jammed and a strike
+  visibly shatters the crowd. One honest density effect remains: a
+  mid-school park is still *clearing* at the reference's 1.5 s mark (20×
+  more bodies moving through each other).
+- **Fear spread is rate-compensated** (`fearSpreadScale`): panic spreads
+  toward 0.92× the *sampled* max neighbor fear, and 16-of-~800 fair
+  samples lag the front of a moving panic wave — a fast sweep panicked
+  ~4× less of the school than the reference (whose cell-order neighbors
+  hug the front) and the strike read as a foreground-only flinch. Scaling
+  the approach rate ×2.5 restores the reference's spread reach (sweep
+  panic: reference ~14% of school, fork 20–27%); the ceiling semantics
+  are untouched.
 - **Absolute counts → fractions** — wander group size is read as "fish per
   2,600" and recruited by probability; scatter's 12 ignition seeds became
   `scatterIgniteFrac`.

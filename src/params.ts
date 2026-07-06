@@ -103,14 +103,26 @@ export const GPU_TUNING = {
    */
   refractoryScale: 1.6,
   /**
-   * Crowd-pressure compensation inside the predator column (HANDOFF §5
-   * "kick vs crowd pressure", §6 predator-vacancy signature). At 50k the
-   * dense wall around the cleared column shoves fresh fish inward through
-   * pure separation pressure — stragglers the reference never had. Relaxing
-   * a fish's own separation by fall×this while inside mouseRadius removes
-   * the inward shove without touching the wall itself (fall ≈ 0 out there).
+   * Crowd-pressure compensation around the predator (HANDOFF §5 "kick vs
+   * crowd pressure", §6 predator signatures). Two jams at 50k the reference
+   * never felt: the dense wall around the cleared column shoves fresh fish
+   * inward through pure separation pressure, and the panic wave can't
+   * *move* bodies — fleeing fish stall against personal space instead of
+   * scattering. Fish relax their own separation by this × max(column
+   * falloff, fear-while-threat-near), so evacuation isn't diffusion-jammed
+   * and a strike visibly shatters the crowd ("react hard, return hard").
    */
   predatorSepRelax: 0.8,
+  /**
+   * Fear-spread compensation for fair neighbor sampling (same §5 family and
+   * mechanism as transmissionScale): panic spreads toward 0.92× the
+   * *sampled* max neighbor fear, and 16-of-~800 random samples lag the true
+   * front of a moving panic wave — a fast sweep panics ~4× less of the
+   * school than the reference, whose cell-order neighbors hug the front.
+   * Scaling the approach rate restores the reference's spread reach; the
+   * 0.92-of-max ceiling semantics are untouched.
+   */
+  fearSpreadScale: 2.5,
   /** Compute workgroup size for the per-particle kernels. */
   workgroupSize: 64,
   /** Max host→GPU events applied per frame (burst/startle/vanguard/...). */
