@@ -1,0 +1,21 @@
+{
+  "name": "bioluminescent-swarm-gpu",
+  "private": true,
+  "version": "4.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port 5209 --strictPort",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "three": "^0.166.1"
+  },
+  "devDependencies": {
+    "@types/three": "^0.166.0",
+    "@webgpu/types": "^0.1.44",
+    "typescript": "^5.5.4",
+    "vite": "^5.3.3"
+  }
+}
