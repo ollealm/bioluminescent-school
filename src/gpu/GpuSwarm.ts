@@ -22,7 +22,6 @@ import {
   WGSL_REDUCE,
   WGSL_RESOLVE,
   WGSL_SCAN,
-  WGSL_SCATTER,
   WGSL_SIM,
 } from "./wgsl-sim";
 import { GpuRenderer } from "./renderer";
@@ -42,9 +41,11 @@ const EV_VANGUARD = 3;
 const EV_WANDER = 4;
 const EV_SCATTER = 5;
 const EV_IGNITE = 6;
+const EV_STRIKE = 7;
 
 const D = TUNING.gridDim;
 const CELLS = D * D * D;
+const FINE_CELLS = GPU_TUNING.fineGridDim ** 3;
 const MAX_EVENTS = GPU_TUNING.maxEvents;
 const EVENT_STRIDE = 16; // floats/u32s per event (4 × vec4)
 const WG = GPU_TUNING.workgroupSize;
@@ -108,10 +109,10 @@ export class GpuSwarm implements SwarmSystem {
   private dyn: [GPUBuffer, GPUBuffer] | null = null;
   private selfB!: GPUBuffer;
   private statB!: GPUBuffer;
-  private gridCount!: GPUBuffer;
-  private gridStart!: GPUBuffer;
-  private gridCursor!: GPUBuffer;
-  private gridEntries!: GPUBuffer;
+  /** Counts + scatter cursors for both grids (atomic u32, const offsets). */
+  private gridAtomics!: GPUBuffer;
+  /** Cell starts + sorted entries for both grids (u32; layout in wgsl-sim). */
+  private gridData!: GPUBuffer;
   private eventsB!: GPUBuffer;
   private uniformsB!: GPUBuffer;
   private centroidB!: GPUBuffer;
@@ -121,6 +122,7 @@ export class GpuSwarm implements SwarmSystem {
     clear: GPUComputePipeline;
     count: GPUComputePipeline;
     scan: GPUComputePipeline;
+    scanFine: GPUComputePipeline;
     scatter: GPUComputePipeline;
     resolve: GPUComputePipeline;
     sim: GPUComputePipeline;
@@ -131,6 +133,7 @@ export class GpuSwarm implements SwarmSystem {
     clear: GPUBindGroup;
     count: [GPUBindGroup, GPUBindGroup];
     scan: GPUBindGroup;
+    scanFine: GPUBindGroup;
     scatter: [GPUBindGroup, GPUBindGroup];
     resolve: [GPUBindGroup, GPUBindGroup];
     sim: [GPUBindGroup, GPUBindGroup];
@@ -172,6 +175,10 @@ export class GpuSwarm implements SwarmSystem {
   private hasPrevNDC = false;
 
   private wanderClock = 5;
+
+  // Strike (flick) detection.
+  private strikeCooldown = 0;
+  private lastSlowTime = 0;
 
   // --- Swarm director state (identical numbers to the reference) ---
   private mood = M_CRUISE;
@@ -311,7 +318,8 @@ export class GpuSwarm implements SwarmSystem {
       clear: mk(gridModCode, "clearGrid", "clearGrid"),
       count: mk(gridModCode, "countGrid", "countGrid"),
       scan: mk(WGSL_SCAN, "scanGrid", "scanGrid"),
-      scatter: mk(WGSL_SCATTER, "scatterGrid", "scatterGrid"),
+      scanFine: mk(WGSL_SCAN, "scanFine", "scanFine"),
+      scatter: mk(gridModCode, "scatterGrid", "scatterGrid"),
       resolve: mk(WGSL_RESOLVE, "resolveEvents", "resolveEvents"),
       sim: mk(WGSL_SIM, "simStep", "simStep"),
       reduce1: mk(WGSL_REDUCE, "reducePass1", "reducePass1"),
@@ -353,10 +361,12 @@ export class GpuSwarm implements SwarmSystem {
     ];
     this.selfB = mkStorage(this.capacity * 32, "self");
     this.statB = mkStorage(this.capacity * 32, "stat");
-    this.gridCount = mkStorage(CELLS * 4, "gridCount");
-    this.gridStart = mkStorage((CELLS + 1) * 4, "gridStart");
-    this.gridCursor = mkStorage(CELLS * 4, "gridCursor");
-    this.gridEntries = mkStorage(this.capacity * 4, "gridEntries");
+    this.gridAtomics = mkStorage(2 * (CELLS + FINE_CELLS) * 4, "gridAtomics");
+    // fine starts + coarse starts + coarse entries + fine entries.
+    this.gridData = mkStorage(
+      (FINE_CELLS + 1 + CELLS + 1 + 2 * this.capacity) * 4,
+      "gridData",
+    );
     this.eventsB = mkStorage(this.eventData.byteLength, "events");
     // [0] centroid+flockN, [1] stats, then 2×64 partial blocks.
     this.centroidB = mkStorage(16 * (2 + 2 * REDUCE_WGS), "centroid");
@@ -538,14 +548,19 @@ export class GpuSwarm implements SwarmSystem {
     ];
 
     this.groups = {
-      clear: bg(p.clear, [null, null, this.gridCount]),
-      count: both(p.count, (dynIn) => [this.uniformsB, dynIn, this.gridCount]),
-      scan: bg(p.scan, [this.gridCount, this.gridStart, this.gridCursor]),
+      clear: bg(p.clear, [null, null, this.gridAtomics]),
+      count: both(p.count, (dynIn) => [
+        this.uniformsB,
+        dynIn,
+        this.gridAtomics,
+      ]),
+      scan: bg(p.scan, [this.gridAtomics, this.gridData]),
+      scanFine: bg(p.scanFine, [this.gridAtomics, this.gridData]),
       scatter: both(p.scatter, (dynIn) => [
         this.uniformsB,
         dynIn,
-        this.gridCursor,
-        this.gridEntries,
+        this.gridAtomics,
+        this.gridData,
       ]),
       resolve: both(p.resolve, (dynIn) => [
         this.uniformsB,
@@ -559,8 +574,7 @@ export class GpuSwarm implements SwarmSystem {
         dynOut,
         this.selfB,
         this.statB,
-        this.gridStart,
-        this.gridEntries,
+        this.gridData,
         this.eventsB,
         this.centroidB,
       ]),
@@ -581,10 +595,8 @@ export class GpuSwarm implements SwarmSystem {
       ...this.dyn,
       this.selfB,
       this.statB,
-      this.gridCount,
-      this.gridStart,
-      this.gridCursor,
-      this.gridEntries,
+      this.gridAtomics,
+      this.gridData,
       this.eventsB,
       this.uniformsB,
       this.centroidB,
@@ -892,6 +904,26 @@ export class GpuSwarm implements SwarmSystem {
     const tpy = py + vhy * lead;
     const tpz = pz + vhz * lead;
 
+    // The strike: a flick — rest bursting into speed — detonates a
+    // directional V-blast at the lunge tip (see GPU_TUNING.strikeSpeed).
+    // Sustained fast movement never triggers it; the flick edge does.
+    this.strikeCooldown -= dt;
+    if (pvm < GPU_TUNING.strikeSpeed * 0.45) this.lastSlowTime = t;
+    if (
+      this.pointerActive &&
+      pvm > GPU_TUNING.strikeSpeed &&
+      t - this.lastSlowTime < GPU_TUNING.strikeFlickWindow &&
+      this.strikeCooldown <= 0
+    ) {
+      this.strikeCooldown = GPU_TUNING.strikeCooldown;
+      this.pending.push({
+        kind: EV_STRIKE,
+        center: [tpx, tpy, tpz],
+        radius: P.mouseRadius,
+        dir: [vhx, vhy, vhz],
+      });
+    }
+
     // Roaming home region.
     const roamR = (P.containRadius * 0.75 * P.roam) / 1.5;
     const targetX = (Math.sin(t * 0.13) + 0.5 * Math.sin(t * 0.23 + 2.1)) * roamR;
@@ -940,7 +972,8 @@ export class GpuSwarm implements SwarmSystem {
     U[16] = targetX;
     U[17] = targetY;
     U[18] = targetZ;
-    U[19] = 0;
+    // Fine-entries offset inside gridData (capacity-dependent; exact in f32).
+    U[19] = FINE_CELLS + 1 + CELLS + 1 + this.capacity;
     U[20] = px;
     U[21] = py;
     U[22] = pz;
@@ -1032,9 +1065,10 @@ export class GpuSwarm implements SwarmSystem {
       pass.dispatchWorkgroups(workgroups);
     };
     const nWg256 = Math.ceil(this.count / 256);
-    run(this.pipelines.clear, g.clear, Math.ceil(CELLS / 256));
+    run(this.pipelines.clear, g.clear, Math.ceil((CELLS + FINE_CELLS) / 256));
     run(this.pipelines.count, g.count[pr], nWg256);
     run(this.pipelines.scan, g.scan, 1);
+    run(this.pipelines.scanFine, g.scanFine, 1);
     run(this.pipelines.scatter, g.scatter[pr], nWg256);
     if (batch.length > 0) run(this.pipelines.resolve, g.resolve[pr], 1);
     run(this.pipelines.sim, g.sim[pr], Math.ceil(this.count / WG));

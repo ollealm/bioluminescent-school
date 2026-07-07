@@ -86,12 +86,12 @@ export const GPU_TUNING = {
    * — where v3 counted every lit neighbor at full strength. That starves
    * "spark carriers" (lit fish that fly a perception radius while still
    * contagious and re-seed the burn indefinitely in dense fuel — the
-   * cascades-never-die failure). At 1.0 the click-cascade growth curve
-   * matches the measured CPU reference: the heat-weighting's front slowdown
-   * and the own-cell quota's closer (hotter) samples cancel. Retune this
-   * first if the sampling scheme changes — it's the calibration dial.
+   * cascades-never-die failure) but also slows the fresh wavefront by the
+   * mean heat factor; this scale restores the click-cascade growth curve to
+   * the measured CPU reference under fair sampling. It's the calibration
+   * dial — retune it first if the sampling scheme ever changes.
    */
-  transmissionScale: 1.25,
+  transmissionScale: 1.7,
   /**
    * Refractory re-derivation at 50k (invariant §4.3: refractory must exceed
    * the cascade's crossing time, "re-derive this at 50k"). The wave crosses
@@ -102,7 +102,7 @@ export const GPU_TUNING = {
    * the same ~1.5× restores the reference's refractory/crossing ratio and
    * starves the spiral. Applied host-side; the user slider keeps meaning.
    */
-  refractoryScale: 1.75,
+  refractoryScale: 2.0,
   /**
    * Crowd-pressure compensation around the predator (HANDOFF §5 "kick vs
    * crowd pressure", §6 predator signatures). Two jams at 50k the reference
@@ -115,44 +115,51 @@ export const GPU_TUNING = {
    */
   predatorSepRelax: 0.8,
   /**
-   * Fear-spread compensation for sampled neighbors (same §5 family and
+   * Fear-spread compensation for fair neighbor sampling (same §5 family and
    * mechanism as transmissionScale): panic spreads toward 0.92× the
-   * *sampled* max neighbor fear, which lags the true front of a moving
-   * panic wave. The own-cell quota supplies front-hugging samples (like
-   * v3's cell-order scan), so only a small rate boost remains — tuned so a
-   * fast sweep panics slightly more of the school than the reference
-   * (~14%), erring lively because 20× more non-reacting bodies dilute the
-   * visible reaction. The 0.92-of-max ceiling semantics are untouched.
+   * *sampled* max neighbor fear, and 16-of-~800 fair samples lag the true
+   * front of a moving panic wave — without compensation a fast sweep panics
+   * ~4× less of the school than the reference (whose cell-order neighbors
+   * hugged the front) and the strike reads as a foreground-only flinch.
+   * Scaling the approach rate restores the reference's spread reach; the
+   * 0.92-of-max ceiling semantics are untouched.
+   *
+   * Do NOT trade this for locality-biased sampling: an own-cell quota was
+   * tried and any position-quantized bias is static in space — it accreted
+   * the school into visible sheets along the grid-cell planes.
    */
-  fearSpreadScale: 1.0,
+  fearSpreadScale: 2.0,
   /**
-   * Of the 16-neighbor cap, this many are taken from the particle's own
-   * grid cell (random in-cell offset) before the hash-rotated fair sweep
-   * fills the rest. Pure fair sampling starves close-range separation at
-   * 50k — knot-mates inside a clump almost never sample each other (16 of
-   * ~800 candidates), so fish pair up into overlapping blobs: measured 36%
-   * of the school with a nearest neighbor < 0.12 u vs ~7% for random
-   * placement. The quota guarantees personal space sees the actual
-   * neighbors; the remaining samples keep cohesion/alignment fair. Costs
-   * nothing — same 16 reads, re-aimed. The v3 reference's cell-order scan
-   * had this locality implicitly (it read its own cell first).
+   * Collision pushout — the anti-clump force, driven by the fine collision
+   * grid below. Fair sampling starves close-range separation at 50k (an
+   * overlapped pair-mate is one of ~800 candidates for 16 samples), so fish
+   * paired up into blobs: 36% of the school had a nearest neighbor < 0.12 u
+   * vs ~7% for random placement. Every fish inside pairPushRange×sepR
+   * (clamped to one fine cell) pushes away continuously at up to this many
+   * u/s² — the v3 separation-clamp magnitude. Fear damps it (threatened
+   * schools pack tighter; collision noise would decohere the fountain), the
+   * threat's neighborhood disables it (wall shoves would pump fish into the
+   * cleared column), and it bypasses the shear-glow sense (dodging a
+   * neighbor is not agitation).
    */
-  ownCellQuota: 8,
-  /**
-   * Collision pushout for sampled personal-space violators, the other half
-   * of the anti-clump story. Even with the own-cell quota, a pair-mate is
-   * one fish among ~130 in the cell — sampled maybe 6% of frames — while
-   * cohesion pulls every frame, so overlapped pairs persist (the v3 scan
-   * caught mates every frame; sampling can't). Compensate rarity with
-   * strength: when a violator inside pairPushRange×sepR *is* sampled, it
-   * gets a hard shove (u/s², deliberately above MAX_FORCE — a collision
-   * response, not steering) whose expected time-average matches the
-   * reference's continuous separation. Same §5 sampling-normalization
-   * family as transmissionScale / fearSpreadScale. Respects the inburst
-   * and predator separation relaxes, so condensation still pops.
-   */
-  pairPush: 40,
+  pairPush: 30,
   pairPushRange: 0.3,
+  /**
+   * The collision grid: a second, fine counting-sort grid (cells of
+   * fineCellSize world units, fineGridDim per axis) built each frame beside
+   * the perception grid, used ONLY for close-range personal space. Within
+   * pairPushRange×sepR (clamped to one fine cell), every real overlap is
+   * detected *every frame, symmetrically* — the continuous response v3 got
+   * from scanning all ~40 neighbors at 2.6k, which no probabilistic
+   * sampling can reproduce at 50k: sampled hard shoves break pairs but
+   * alignment re-syncs them and overlap re-accumulates (measured 4.7% at
+   * 15 s → 29% at 60 s; the fine grid holds 0% flat). Fine cells hold
+   * ~0.5–1.5 fish, so the pass costs ~a dozen position reads per particle
+   * and three small dispatches. pairPush is now a continuous force in the
+   * v3 separation-clamp family (~21 u/s²), not a rarity-compensated kick.
+   */
+  fineGridDim: 64,
+  fineCellSize: 0.45,
   /**
    * The hunter wedge (owner's ask): at speed, the predator's danger zone
    * elongates along its heading and narrows at the flanks — a lunge, not a
@@ -162,9 +169,25 @@ export const GPU_TUNING = {
    * behind-reach is untouched: prey dropping aft of the predator is the
    * fountain's "safe wake" beat and must stay safe.
    */
-  wedgeAhead: 0.6,
+  wedgeAhead: 1.1,
   wedgeSide: 0.1,
   wedgeSpeedRef: 25,
+  /**
+   * The strike (owner's ask, round two): a flick — pointer at rest bursting
+   * past strikeSpeed (u/s) within strikeFlickWindow (s) — detonates a
+   * directional V-blast at the lunge tip: fish inside a forward wedge part
+   * hard away from the strike line, take contact-grade fear, and a wake of
+   * outward ignitions lights the path. Cooldown keeps it a *move* (stalk →
+   * lunge → strike), not a mode; sustained fast circling never triggers it.
+   * Magnitudes sit in the click-burst family (blast ≈ 9·fall+2).
+   */
+  strikeSpeed: 32,
+  strikeFlickWindow: 0.35,
+  strikeCooldown: 1.2,
+  /** Strike wedge: reach ×mouseRadius along the heading; V half-width opens
+   * from apexWidth×mouseRadius at the cursor to 1×mouseRadius at the tip. */
+  strikeReach: 2.2,
+  strikeApexWidth: 0.35,
   /** Compute workgroup size for the per-particle kernels. */
   workgroupSize: 64,
   /** Max host→GPU events applied per frame (burst/startle/vanguard/...). */

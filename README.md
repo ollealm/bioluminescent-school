@@ -82,31 +82,42 @@ rationale in place; user-facing sliders keep their v3 meaning throughout.
 - **Neighbor sampling** — the 16-neighbor cap survives, but candidates are
   sampled with per-particle-per-frame hash-randomized cell order and
   in-cell offsets instead of v3's grid-cell-order bias (which would read
-  as anisotropy at 50k). Half the cap (`ownCellQuota`) is reserved for the
-  particle's own cell: pure fair sampling starves close-range separation
-  (knot-mates almost never sample each other among ~800 candidates) and
-  fish paired up into overlapping blobs — 36% of the school had a nearest
-  neighbor < 0.12 u vs ~7% for random placement.
-- **Collision pushout** (`pairPush`) — the other half of anti-clumping:
-  even quota'd, an overlapped pair-mate is sampled only ~6% of frames while
-  cohesion pulls every frame, so each sampled violation shoves hard enough
-  that the expected time-average matches v3's every-frame separation scan.
-  Fear damps it (threatened schools pack tighter; collision noise would
-  decohere the fountain) and it disables near the predator (shoves at the
-  cleared column's compressed wall would pump fish into the vacancy). It
-  bypasses the shear-glow sense — dodging a neighbor is not agitation.
-  Result: overlap fraction 36% → 1.3%, below random — actively maintained
-  personal space, which is what real schooling looks like. Zero extra
-  memory traffic; the same 16 reads, re-aimed.
+  as anisotropy at 50k). Fair sampling must stay *pure*: an own-cell
+  quota was tried for close-range locality and any position-quantized bias
+  is static in space — it accreted the school into visible sheets along
+  the grid-cell planes within a minute.
+- **The fine collision grid** (`fineGridDim`/`fineCellSize`/`pairPush`) —
+  anti-clumping (owner's ask). Fair sampling starves close-range
+  separation (an overlapped pair-mate is one of ~800 candidates for 16
+  samples) and fish paired into blobs: 36% of the school had a nearest
+  neighbor < 0.12 u vs ~7% for random placement — and no probabilistic
+  push can fix it (sampled kicks break pairs, alignment re-syncs them;
+  measured re-accumulating to 29% within a minute). A second counting-sort
+  grid at 0.45 u cells detects every real overlap every frame from both
+  sides — the continuous response v3 got by scanning all its neighbors —
+  for ~a dozen extra position reads per particle. Overlap holds at **0%
+  flat** with no grid-plane signature. The pushout damps with fear
+  (threatened schools pack tighter; collision noise would decohere the
+  fountain), disables near the predator (wall shoves would pump fish into
+  the cleared column), and bypasses the shear-glow sense — dodging a
+  neighbor is not agitation.
 - **The hunter wedge** (`wedgeAhead`/`wedgeSide`/`wedgeSpeedRef`, owner's
   ask) — at speed the danger zone stretches into a lunge along the heading
-  (+60% reach) with slightly tapered flanks, relaxing to v3's sphere at
+  (+110% reach) with slightly tapered flanks, relaxing to v3's sphere at
   rest. Lasting *fear* keeps the reference sphere's contact semantics: the
   wedge makes prey evade the approaching hunter early, but only genuine
   proximity marks them. Prey ahead of the lunge is herded forward-sideways
   before it parts and falls behind — richer choreography than v3's, with
   the aggregate fountainDot cancelling toward 0 *by construction*; the
   wedge-aware signature is `fountainBehindDot` (see acceptance).
+- **The strike** (`strikeSpeed`/`strikeCooldown`, owner's ask) — a flick
+  (pointer at rest bursting past 32 u/s) detonates a directional V-blast
+  at the lunge tip: fish part hard away from the strike line with
+  contact-grade fear and a wake of outward ignitions along the path
+  (measured: one flick sends ~30% of a 20k school bolting at >4 u/s).
+  A 1.2 s cooldown and the rest-to-fast edge detector keep it a *move* —
+  stalk, lunge, strike — never a mode; sustained fast circling can't
+  trigger it. Blast magnitudes sit in the click-burst family.
 - **Contagion is heat-weighted** (`transmissionScale`). At 50k a lit fish
   is a *spark carrier*: the radial kick flies it a full perception radius
   while still contagious, and with fuel everywhere the burn re-seeds

@@ -15,7 +15,7 @@ import { GPU_TUNING, TUNING } from "../params";
  *   U[1]  head.xyz, eventCount
  *   U[2]  dirAlign, dirCoh, driveW, dirSpeed
  *   U[3]  millF, gaitRate, breatheR, farR
- *   U[4]  roamTarget.xyz, —
+ *   U[4]  roamTarget.xyz, fine-entries offset in gridData
  *   U[5]  pointer.xyz, pointerActive
  *   U[6]  lead.xyz, pvm                 (lead = pointer + velocity lead)
  *   U[7]  velHat.xyz, mouseRadius
@@ -59,9 +59,27 @@ const F_SPEED_BOOST: f32 = ${TUNING.fearSpeedBoost};
 const INBURST_RELAX: f32 = ${TUNING.inburstSepRelax};
 const SCATTER_IGNITE_FRAC: f32 = ${GPU_TUNING.scatterIgniteFrac};
 const PRED_SEP_RELAX: f32 = ${GPU_TUNING.predatorSepRelax};
-const OWN_CELL_QUOTA: u32 = ${GPU_TUNING.ownCellQuota}u;
 const PAIR_PUSH: f32 = ${GPU_TUNING.pairPush};
 const PAIR_RANGE: f32 = ${GPU_TUNING.pairPushRange};
+
+// Fine collision grid (close-range personal space only; see GPU_TUNING).
+const FINE_D: i32 = ${GPU_TUNING.fineGridDim};
+const FINE_CELLS: u32 = ${GPU_TUNING.fineGridDim ** 3}u;
+const FINE_INV: f32 = ${1 / GPU_TUNING.fineCellSize};
+const FINE_CELL_SZ: f32 = ${GPU_TUNING.fineCellSize};
+
+// The two grids share two buffers. gridData (u32): fine starts, coarse
+// starts, coarse entries, fine entries — the fine-entries offset depends on
+// the allocated capacity and arrives in U[19]. gridAtomics (atomic<u32>):
+// coarse counts, fine counts, coarse cursors, fine cursors.
+const FS_OFF: u32 = 0u;
+const CS_OFF: u32 = ${GPU_TUNING.fineGridDim ** 3 + 1}u;
+const CE_OFF: u32 = ${GPU_TUNING.fineGridDim ** 3 + 1 + TUNING.gridDim ** 3 + 1}u;
+const CC_OFF: u32 = 0u;
+const FC_OFF: u32 = ${TUNING.gridDim ** 3}u;
+const CU_OFF: u32 = ${TUNING.gridDim ** 3 + GPU_TUNING.fineGridDim ** 3}u;
+const FU_OFF: u32 = ${2 * TUNING.gridDim ** 3 + GPU_TUNING.fineGridDim ** 3}u;
+const ATOMICS_LEN: u32 = ${2 * (TUNING.gridDim ** 3 + GPU_TUNING.fineGridDim ** 3)}u;
 const WEDGE_AHEAD: f32 = ${GPU_TUNING.wedgeAhead};
 const WEDGE_SIDE: f32 = ${GPU_TUNING.wedgeSide};
 const WEDGE_SPEED_REF: f32 = ${GPU_TUNING.wedgeSpeedRef};
@@ -78,6 +96,9 @@ const EV_VANGUARD: u32 = 3u;
 const EV_WANDER: u32 = 4u;
 const EV_SCATTER: u32 = 5u;
 const EV_IGNITE: u32 = 6u;
+const EV_STRIKE: u32 = 7u;
+const STRIKE_REACH: f32 = ${GPU_TUNING.strikeReach};
+const STRIKE_APEX: f32 = ${GPU_TUNING.strikeApexWidth};
 
 struct Dyn {
   pe: vec4f, // pos.xyz, energy
@@ -117,6 +138,22 @@ fn flagsFired(w: f32) -> bool { return (u32(w) & 4u) != 0u; }
 fn cellCoord(v: f32, invCell: f32) -> i32 {
   return clamp(i32(floor(v * invCell)) + (D / 2), 0, D - 1);
 }
+
+fn fineCoord(v: f32) -> i32 {
+  return clamp(i32(floor(v * FINE_INV)) + (FINE_D / 2), 0, FINE_D - 1);
+}
+
+fn coarseCellOf(p: vec3f, invCell: f32) -> u32 {
+  return u32(cellCoord(p.x, invCell))
+    + u32(cellCoord(p.y, invCell)) * u32(D)
+    + u32(cellCoord(p.z, invCell)) * D2;
+}
+
+fn fineCellOf(p: vec3f) -> u32 {
+  return u32(fineCoord(p.x))
+    + u32(fineCoord(p.y)) * u32(FINE_D)
+    + u32(fineCoord(p.z)) * u32(FINE_D * FINE_D);
+}
 `;
 
 /** Grid passes: clear counts, count, scan (starts + cursors), scatter. */
@@ -125,42 +162,60 @@ ${WGSL_COMMON}
 
 @group(0) @binding(0) var<uniform> U: array<vec4f, 16>;
 @group(0) @binding(1) var<storage, read> dynIn: array<Dyn>;
-@group(0) @binding(2) var<storage, read_write> gridCount: array<atomic<u32>>;
+@group(0) @binding(2) var<storage, read_write> gridAtomics: array<atomic<u32>>;
+@group(0) @binding(3) var<storage, read_write> gridData: array<u32>;
 
 @compute @workgroup_size(256)
 fn clearGrid(@builtin(global_invocation_id) gid: vec3u) {
-  if (gid.x < CELLS) { atomicStore(&gridCount[gid.x], 0u); }
+  // Clears both grids' counts (cursors are initialized by the scans).
+  if (gid.x < CELLS + FINE_CELLS) { atomicStore(&gridAtomics[gid.x], 0u); }
 }
 
 @compute @workgroup_size(256)
 fn countGrid(@builtin(global_invocation_id) gid: vec3u) {
   let i = gid.x;
   if (i >= u32(U[0].w)) { return; }
-  let invCell = U[8].w;
   let p = dynIn[i].pe.xyz;
-  let cell = u32(cellCoord(p.x, invCell))
-    + u32(cellCoord(p.y, invCell)) * u32(D)
-    + u32(cellCoord(p.z, invCell)) * D2;
-  atomicAdd(&gridCount[cell], 1u);
+  atomicAdd(&gridAtomics[CC_OFF + coarseCellOf(p, U[8].w)], 1u);
+  atomicAdd(&gridAtomics[FC_OFF + fineCellOf(p)], 1u);
+}
+
+@compute @workgroup_size(256)
+fn scatterGrid(@builtin(global_invocation_id) gid: vec3u) {
+  let i = gid.x;
+  if (i >= u32(U[0].w)) { return; }
+  let p = dynIn[i].pe.xyz;
+  let cSlot = atomicAdd(&gridAtomics[CU_OFF + coarseCellOf(p, U[8].w)], 1u);
+  gridData[CE_OFF + cSlot] = i;
+  let fSlot = atomicAdd(&gridAtomics[FU_OFF + fineCellOf(p)], 1u);
+  gridData[u32(U[4].w) + fSlot] = i; // U[4].w = fine-entries offset
 }
 `;
 
+/**
+ * Prefix scans for both grids: cell counts → start offsets + scatter
+ * cursors. One workgroup each; threads walk contiguous chunks serially.
+ */
 export const WGSL_SCAN = /* wgsl */ `
 ${WGSL_COMMON}
 
-@group(0) @binding(0) var<storage, read_write> gridCount: array<atomic<u32>>;
-@group(0) @binding(1) var<storage, read_write> gridStart: array<u32>;
-@group(0) @binding(2) var<storage, read_write> gridCursor: array<atomic<u32>>;
+@group(0) @binding(0) var<storage, read_write> gridAtomics: array<atomic<u32>>;
+@group(0) @binding(1) var<storage, read_write> gridData: array<u32>;
 
-const CHUNK: u32 = CELLS / 256u;
 var<workgroup> partial: array<u32, 256>;
 
-@compute @workgroup_size(256)
-fn scanGrid(@builtin(local_invocation_index) lid: u32) {
-  let base = lid * CHUNK;
+fn scanRange(
+  lid: u32,
+  chunk: u32,
+  total: u32,
+  countOff: u32,
+  startOff: u32,
+  cursorOff: u32,
+) {
+  let base = lid * chunk;
   var local = 0u;
-  for (var c = 0u; c < CHUNK; c++) {
-    local += atomicLoad(&gridCount[base + c]);
+  for (var c = 0u; c < chunk; c++) {
+    local += atomicLoad(&gridAtomics[countOff + base + c]);
   }
   partial[lid] = local;
   workgroupBarrier();
@@ -174,36 +229,24 @@ fn scanGrid(@builtin(local_invocation_index) lid: u32) {
   }
   workgroupBarrier();
   var run = partial[lid];
-  for (var c = 0u; c < CHUNK; c++) {
+  for (var c = 0u; c < chunk; c++) {
     let idx = base + c;
-    let cnt = atomicLoad(&gridCount[idx]);
-    gridStart[idx] = run;
-    atomicStore(&gridCursor[idx], run);
+    let cnt = atomicLoad(&gridAtomics[countOff + idx]);
+    gridData[startOff + idx] = run;
+    atomicStore(&gridAtomics[cursorOff + idx], run);
     run += cnt;
   }
-  if (lid == 255u) { gridStart[CELLS] = run; }
+  if (lid == 255u) { gridData[startOff + total] = run; }
 }
-`;
-
-export const WGSL_SCATTER = /* wgsl */ `
-${WGSL_COMMON}
-
-@group(0) @binding(0) var<uniform> U: array<vec4f, 16>;
-@group(0) @binding(1) var<storage, read> dynIn: array<Dyn>;
-@group(0) @binding(2) var<storage, read_write> gridCursor: array<atomic<u32>>;
-@group(0) @binding(3) var<storage, read_write> gridEntries: array<u32>;
 
 @compute @workgroup_size(256)
-fn scatterGrid(@builtin(global_invocation_id) gid: vec3u) {
-  let i = gid.x;
-  if (i >= u32(U[0].w)) { return; }
-  let invCell = U[8].w;
-  let p = dynIn[i].pe.xyz;
-  let cell = u32(cellCoord(p.x, invCell))
-    + u32(cellCoord(p.y, invCell)) * u32(D)
-    + u32(cellCoord(p.z, invCell)) * D2;
-  let slot = atomicAdd(&gridCursor[cell], 1u);
-  gridEntries[slot] = i;
+fn scanGrid(@builtin(local_invocation_index) lid: u32) {
+  scanRange(lid, CELLS / 256u, CELLS, CC_OFF, CS_OFF, CU_OFF);
+}
+
+@compute @workgroup_size(256)
+fn scanFine(@builtin(local_invocation_index) lid: u32) {
+  scanRange(lid, FINE_CELLS / 256u, FINE_CELLS, FC_OFF, FS_OFF, FU_OFF);
 }
 `;
 
@@ -345,10 +388,9 @@ ${WGSL_COMMON}
 @group(0) @binding(2) var<storage, read_write> dynOut: array<Dyn>;
 @group(0) @binding(3) var<storage, read_write> selfB: array<SelfState>;
 @group(0) @binding(4) var<storage, read> stat: array<Stat>;
-@group(0) @binding(5) var<storage, read> gridStart: array<u32>;
-@group(0) @binding(6) var<storage, read> gridEntries: array<u32>;
-@group(0) @binding(7) var<storage, read> events: array<Ev>;
-@group(0) @binding(8) var<storage, read> centroid: array<vec4f>;
+@group(0) @binding(5) var<storage, read> gridData: array<u32>;
+@group(0) @binding(6) var<storage, read> events: array<Ev>;
+@group(0) @binding(7) var<storage, read> centroid: array<vec4f>;
 
 const OFFS = array<vec3i, 27>(${offsets27()});
 
@@ -404,7 +446,7 @@ fn tryIgnite(
 fn simStep(@builtin(global_invocation_id) gid: vec3u) {
   let n = u32(U[0].w);
   if (gid.x >= n) { return; }
-  let i = gridEntries[gid.x];
+  let i = gridData[CE_OFF + gid.x];
 
   // ---- Uniform unpack (slot map in wgsl-sim.ts header) ----
   let dt = U[0].x;
@@ -571,6 +613,45 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
             &energy, &fired, &refract, &pulse, &pulseSign, &vel, &glow);
         }
       }
+      case EV_STRIKE: {
+        // A hunter's dart: fish inside a forward-opening V along the strike
+        // heading part hard away from the strike line, take contact-grade
+        // fear, and a wake of outward ignitions lights the path. Depth uses
+        // the same squash as the pointer column.
+        let R = E.center.w;
+        let dd = pos - E.center.xyz;
+        let ddS = vec3f(dd.x, dd.y, dd.z * 0.45);
+        let along = dot(ddS, E.dir.xyz);
+        let reach = R * STRIKE_REACH;
+        if (along > -R * 0.2 && along < reach) {
+          let perp3 = ddS - along * E.dir.xyz;
+          let perp = length(perp3);
+          let t01 = clamp(along / reach, 0.0, 1.0);
+          let sideR = R * mix(STRIKE_APEX, 1.0, t01); // the V opens forward
+          if (perp < sideR) {
+            // Strongest at the apex, fading toward the tip and edges.
+            let fall = (1.0 - perp / sideR) * (1.0 - 0.55 * t01);
+            var pdir: vec3f;
+            if (perp > 1e-3) {
+              pdir = perp3 / perp;
+            } else {
+              pdir = vec3f(-E.dir.y, E.dir.x, 0.0); // on the line: stable side
+            }
+            let blast = 9.0 * fall + 2.0;
+            vel += vec3f(
+              pdir.x * blast + E.dir.x * fall * 2.0,
+              pdir.y * blast + E.dir.y * fall * 2.0,
+              (pdir.z * blast + E.dir.z * fall * 2.0) * 0.6,
+            );
+            fear = max(fear, 0.35 + 0.65 * fall);
+            glow = max(glow, 0.5 + 0.5 * fall);
+            if (rnd(i, salt) < 0.35 * fall + 0.08) {
+              tryIgnite(i, salt + 1u, false, E.center.xyz, 1.0, pos, kickP,
+                &energy, &fired, &refract, &pulse, &pulseSign, &vel, &glow);
+            }
+          }
+        }
+      }
       default: {}
     }
   }
@@ -594,36 +675,29 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
   let cz = cellCoord(pos.z, invCell);
   let rot = pcg(i ^ pcg(u32(U[0].z) * 2654435761u));
 
-  // Iteration 0 visits the particle's OWN cell with a reserved quota before
-  // the hash-rotated fair sweep over the neighborhood fills the cap: pure
-  // fair sampling starves close-range separation at high density (knot-
-  // mates almost never sample each other among ~800 candidates), and fish
-  // pair up into overlapping blobs. Same 16 reads, re-aimed.
-  for (var oi = 0u; oi < 28u; oi++) {
+  // Hash-rotated fair sweep over the 27-cell neighborhood. Deliberately NO
+  // own-cell priority: any position-quantized sampling bias is static in
+  // space and compounds — an earlier own-cell quota accreted the school
+  // into visible sheets along the grid planes within a minute. Close-range
+  // personal space is handled exhaustively by the fine collision grid
+  // below, so flocking keeps the reference's clean 16-accept semantics.
+  for (var oi = 0u; oi < 27u; oi++) {
     if (found >= MAX_NEIGHBORS) { break; }
-    var gx = cx;
-    var gy = cy;
-    var gz = cz;
-    var cellCap = OWN_CELL_QUOTA;
-    if (oi > 0u) {
-      let o = OFFS[(oi - 1u + rot) % 27u];
-      if (o.x == 0 && o.y == 0 && o.z == 0) { continue; } // already visited
-      gx = cx + o.x;
-      gy = cy + o.y;
-      gz = cz + o.z;
-      cellCap = MAX_NEIGHBORS;
-    }
+    let o = OFFS[(oi + rot) % 27u];
+    let gx = cx + o.x;
+    let gy = cy + o.y;
+    let gz = cz + o.z;
     if (gx < 0 || gx >= D || gy < 0 || gy >= D || gz < 0 || gz >= D) {
       continue;
     }
     let cell = u32(gx) + u32(gy) * u32(D) + u32(gz) * D2;
-    let start = gridStart[cell];
-    let cnt = gridStart[cell + 1u] - start;
+    let start = gridData[CS_OFF + cell];
+    let cnt = gridData[CS_OFF + cell + 1u] - start;
     if (cnt == 0u) { continue; }
     let off = pcg(rot ^ cell) % cnt;
     for (var e = 0u; e < cnt; e++) {
-      if (found >= cellCap) { break; }
-      let j = gridEntries[start + ((off + e) % cnt)];
+      if (found >= MAX_NEIGHBORS) { break; }
+      let j = gridData[CE_OFF + start + ((off + e) % cnt)];
       if (j == i) { continue; }
       let jd = dynIn[j];
       let d3 = jd.pe.xyz - pos;
@@ -634,13 +708,6 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
       if (dist < sepR) {
         let w = 1.0 - dist / sepR;
         sep -= d3 * (w * w / dist);
-        // Collision pushout: sampled violators this deep shove hard —
-        // sampling catches an overlapping pair-mate rarely, so each catch
-        // must do the work the reference's every-frame scan did.
-        let hard = 1.0 - dist / (sepR * PAIR_RANGE);
-        if (hard > 0.0) {
-          hardPush -= (d3 / dist) * (hard * PAIR_PUSH);
-        }
       }
       coh += jd.pe.xyz;
       aln += jd.vf.xyz;
@@ -663,6 +730,46 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
         }
       }
       maxFear = max(maxFear, jd.vf.w);
+    }
+  }
+
+  // ---- Fine collision grid: continuous close-range personal space ----
+  // Every real overlap is seen every frame, from both sides — the
+  // continuous response the reference got from scanning all neighbors,
+  // which no probabilistic sampling reproduces at this density (sampled
+  // kicks break pairs, alignment re-syncs them, overlap re-accumulates).
+  {
+    let range = min(sepR * PAIR_RANGE, FINE_CELL_SZ);
+    let range2 = range * range;
+    let fx = fineCoord(pos.x);
+    let fy = fineCoord(pos.y);
+    let fz = fineCoord(pos.z);
+    let feOff = u32(U[4].w);
+    for (var oz = -1; oz <= 1; oz++) {
+      for (var oy = -1; oy <= 1; oy++) {
+        for (var ox = -1; ox <= 1; ox++) {
+          let gx = fx + ox;
+          let gy = fy + oy;
+          let gz = fz + oz;
+          if (gx < 0 || gx >= FINE_D || gy < 0 || gy >= FINE_D
+              || gz < 0 || gz >= FINE_D) {
+            continue;
+          }
+          let fcell = u32(gx) + u32(gy) * u32(FINE_D)
+            + u32(gz) * u32(FINE_D * FINE_D);
+          let fs = gridData[FS_OFF + fcell];
+          let fcnt = gridData[FS_OFF + fcell + 1u] - fs;
+          for (var k = 0u; k < fcnt; k++) {
+            let j = gridData[feOff + fs + k];
+            if (j == i) { continue; }
+            let d3 = dynIn[j].pe.xyz - pos;
+            let d2 = dot(d3, d3);
+            if (d2 >= range2) { continue; }
+            let dist = max(sqrt(d2), 1e-4);
+            hardPush -= (d3 / dist) * ((1.0 - dist / range) * PAIR_PUSH);
+          }
+        }
+      }
     }
   }
 
@@ -747,35 +854,37 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
     * (1.0 + energy * E_SPEED_BOOST + fearI * F_SPEED_BOOST);
 
   if (found > 0u) {
+    // During an inburst, lit particles let the crowd condense — when the
+    // flash fades, separation snaps back and the bubble pops.
+    var relaxMul = 1.0;
+    if (pulseSign < 0.0) {
+      relaxMul *= 1.0 - min(1.0, energy) * INBURST_RELAX;
+    }
+    // Crowd-pressure relief around the predator: inside the column the
+    // wall must not shove fish back in, and frightened fish near the
+    // threat shoulder through the crowd instead of jamming against
+    // personal space — at 20× density the panic wave has to move bodies.
+    let panicRelax = max(predFall, select(0.0, fearI, threatNear));
+    relaxMul *= 1.0 - panicRelax * PRED_SEP_RELAX;
+
     // Separation (all modes — personal space is universal)
     let sl = length(sep);
     if (sl > 1e-5) {
       let s = clampLen((sep / sl) * maxSpeed - vel, MAX_FORCE);
-      // During an inburst, lit particles let the crowd condense — when the
-      // flash fades, separation snaps back and the bubble pops.
-      var relaxMul = 1.0;
-      if (pulseSign < 0.0) {
-        relaxMul *= 1.0 - min(1.0, energy) * INBURST_RELAX;
-      }
-      // Crowd-pressure relief around the predator: inside the column the
-      // wall must not shove fish back in, and frightened fish near the
-      // threat shoulder through the crowd instead of jamming against
-      // personal space — at 20× density the panic wave has to move bodies.
-      let panicRelax = max(predFall, select(0.0, fearI, threatNear));
-      relaxMul *= 1.0 - panicRelax * PRED_SEP_RELAX;
       acc += s * (separationW * relaxMul);
-      // Collision pushout obeys the same relaxes (inbursts must condense)
-      // and vanishes with the user's separation slider. Fear damps it and
-      // the threat's whole neighborhood disables it: threatened schools
-      // pack tighter, collision noise would decohere the fountain's parting
-      // velocity field, and shoves at the cleared column's compressed wall
-      // would pump fish *into* the vacancy. It integrates beside acc rather
-      // than through it: dodging a neighbor is not agitation, so it must
-      // not trip the shear-glow knee.
-      pairKick = hardPush
-        * (min(1.0, separationW) * relaxMul * (1.0 - fearI)
-          * select(1.0, 0.0, threatNear));
     }
+
+    // Collision pushout obeys the same relaxes (inbursts must condense)
+    // and vanishes with the user's separation slider. Fear damps it and
+    // the threat's whole neighborhood disables it: threatened schools
+    // pack tighter, collision noise would decohere the fountain's parting
+    // velocity field, and shoves at the cleared column's compressed wall
+    // would pump fish *into* the vacancy. It integrates beside acc rather
+    // than through it: dodging a neighbor is not agitation, so it must
+    // not trip the shear-glow knee.
+    pairKick = hardPush
+      * (min(1.0, separationW) * relaxMul * (1.0 - fearI)
+        * select(1.0, 0.0, threatNear));
 
     if (mode == FLOCK) {
       // Cohesion with "arrival" damping (HANDOFF §4.1: without it the
