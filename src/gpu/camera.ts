@@ -45,18 +45,26 @@ export class SwarmCamera {
     return this.z - worldZ;
   }
 
-  /** Project an NDC pointer ([-1,1]²) onto the z=0 swarm plane. */
-  unprojectToSwarmPlane(ndc: { x: number; y: number }): {
-    x: number;
-    y: number;
-    z: number;
-  } {
+  /**
+   * Project an NDC pointer ([-1,1]²) onto the plane z = planeZ.
+   *
+   * The reference pinned this to z=0 (the school hovers near it by
+   * construction); the fork passes the school's live centroid z so the
+   * predator column always pierces the school's mid-depth — a school that
+   * has breathed or drifted a few units in z would otherwise only be
+   * grazed by the depth-squashed influence column.
+   */
+  unprojectToSwarmPlane(
+    ndc: { x: number; y: number },
+    planeZ = 0,
+  ): { x: number; y: number; z: number } {
     const tanHalf = Math.tan((this.fovDeg * Math.PI) / 360);
-    // Ray from (0,0,camZ) through the pixel hits z=0 at t = camZ.
+    // Ray from (0,0,camZ) through the pixel hits z=planeZ at t = camZ−planeZ.
+    const t = this.z - planeZ;
     return {
-      x: ndc.x * tanHalf * this.aspect * this.z,
-      y: ndc.y * tanHalf * this.z,
-      z: 0,
+      x: ndc.x * tanHalf * this.aspect * t,
+      y: ndc.y * tanHalf * t,
+      z: planeZ,
     };
   }
 }

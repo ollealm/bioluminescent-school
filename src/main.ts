@@ -113,13 +113,20 @@ async function boot(): Promise<void> {
   window.addEventListener("blur", () => system.clearPointer());
 
   // --- Resize ---
-  window.addEventListener("resize", () => {
+  const applySize = () => {
+    if (window.innerWidth < 1 || window.innerHeight < 1) return;
     application.resize(
       window.innerWidth,
       window.innerHeight,
       window.devicePixelRatio,
     );
-  });
+  };
+  window.addEventListener("resize", applySize);
+  // A tab can boot with zero layout (hidden tab, display:none embed) and
+  // never receive a window resize — watch the container for its first real
+  // size instead of trusting boot-time innerWidth.
+  new ResizeObserver(applySize).observe(app);
+  applySize();
 
   // --- Loop ---
   let last = performance.now();

@@ -547,7 +547,14 @@ export class GpuSwarm implements SwarmSystem {
     this.hasPrevNDC = true;
     this.pointerActive = true;
 
-    this.pointer = this.camera.unprojectToSwarmPlane(ndc);
+    // Aim at the school's mid-depth, not the fixed z=0 plane: the predator
+    // column tracks wherever the school is actually swimming. Clamped so a
+    // degenerate centroid (boot, empty flock) can't fling the pointer.
+    const planeZ = Math.max(
+      -this.params.containRadius,
+      Math.min(this.params.containRadius, this.centroid.z),
+    );
+    this.pointer = this.camera.unprojectToSwarmPlane(ndc, planeZ);
   }
 
   clearPointer(): void {
