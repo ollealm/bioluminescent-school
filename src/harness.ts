@@ -28,6 +28,14 @@ export interface HarnessReport {
   inburstInwardFrac: number;
   /** Mean dot(velocity, predator travel dir) among feared particles. Healthy < −0.2. */
   fountainDot: number;
+  /**
+   * Same, restricted to feared particles *behind* the predator — the
+   * "part and drop behind" beat. Under the GPU fork's hunter wedge the
+   * aggregate fountainDot cancels toward 0 by construction (prey ahead of
+   * the lunge is herded forward-sideways before it parts), so this is the
+   * signature to hold < −0.2 there. On the CPU reference both read alike.
+   */
+  fountainBehindDot: number;
   /** Particles left inside mouseRadius after the pointer parks 1.5 s. Healthy: ~0 (a mid-school park at 50k may still be evacuating). */
   predatorVacancy: number;
   /** Same count after 3 s — the settled, density-independent verdict. */
@@ -256,14 +264,22 @@ export async function runHarness(opts: HarnessOptions): Promise<HarnessReport> {
   st = await probe.read();
   let dotSum = 0;
   let feared = 0;
+  let behindSum = 0;
+  let behindN = 0;
   for (let i = 0; i < n; i++) {
     if (st.fear[i] < 0.25) continue;
     const sp = Math.hypot(st.vel[i * 3], st.vel[i * 3 + 1], st.vel[i * 3 + 2]);
     if (sp < 0.3) continue;
-    dotSum += st.vel[i * 3] / sp; // travel direction is +x
+    const dot = st.vel[i * 3] / sp; // travel direction is +x
+    dotSum += dot;
     feared++;
+    if (st.pos[i * 3] < st.pointer.x) {
+      behindSum += dot;
+      behindN++;
+    }
   }
   const fountainDot = feared > 0 ? dotSum / feared : 0;
+  const fountainBehindDot = behindN > 0 ? behindSum / behindN : 0;
   // Probe hygiene (v3 quirk that bites harder at 50k): without this the
   // vacancy probe settles around the sweep's stale active pointer and the
   // park begins with a violent pointer jump.
@@ -339,6 +355,7 @@ export async function runHarness(opts: HarnessOptions): Promise<HarnessReport> {
     outburstOutwardFrac: Number(outburstOutwardFrac.toFixed(2)),
     inburstInwardFrac: Number(inburstInwardFrac.toFixed(2)),
     fountainDot: Number(fountainDot.toFixed(2)),
+    fountainBehindDot: Number(fountainBehindDot.toFixed(2)),
     predatorVacancy,
     predatorVacancy3s,
     panicFrac: Number(panicFrac.toFixed(2)),

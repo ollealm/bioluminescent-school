@@ -59,6 +59,12 @@ const F_SPEED_BOOST: f32 = ${TUNING.fearSpeedBoost};
 const INBURST_RELAX: f32 = ${TUNING.inburstSepRelax};
 const SCATTER_IGNITE_FRAC: f32 = ${GPU_TUNING.scatterIgniteFrac};
 const PRED_SEP_RELAX: f32 = ${GPU_TUNING.predatorSepRelax};
+const OWN_CELL_QUOTA: u32 = ${GPU_TUNING.ownCellQuota}u;
+const PAIR_PUSH: f32 = ${GPU_TUNING.pairPush};
+const PAIR_RANGE: f32 = ${GPU_TUNING.pairPushRange};
+const WEDGE_AHEAD: f32 = ${GPU_TUNING.wedgeAhead};
+const WEDGE_SIDE: f32 = ${GPU_TUNING.wedgeSide};
+const WEDGE_SPEED_REF: f32 = ${GPU_TUNING.wedgeSpeedRef};
 
 // Particle modes (match the CPU reference).
 const FLOCK: u32 = 0u;
@@ -574,6 +580,7 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
   // hash-rotated per particle per frame, so the accepted subset is an
   // unbiased sample and anisotropy averages out (HANDOFF §5).
   var sep = vec3f(0.0);
+  var hardPush = vec3f(0.0);
   var coh = vec3f(0.0);
   var aln = vec3f(0.0);
   var found = 0u;
@@ -587,12 +594,25 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
   let cz = cellCoord(pos.z, invCell);
   let rot = pcg(i ^ pcg(u32(U[0].z) * 2654435761u));
 
-  for (var oi = 0u; oi < 27u; oi++) {
+  // Iteration 0 visits the particle's OWN cell with a reserved quota before
+  // the hash-rotated fair sweep over the neighborhood fills the cap: pure
+  // fair sampling starves close-range separation at high density (knot-
+  // mates almost never sample each other among ~800 candidates), and fish
+  // pair up into overlapping blobs. Same 16 reads, re-aimed.
+  for (var oi = 0u; oi < 28u; oi++) {
     if (found >= MAX_NEIGHBORS) { break; }
-    let o = OFFS[(oi + rot) % 27u];
-    let gx = cx + o.x;
-    let gy = cy + o.y;
-    let gz = cz + o.z;
+    var gx = cx;
+    var gy = cy;
+    var gz = cz;
+    var cellCap = OWN_CELL_QUOTA;
+    if (oi > 0u) {
+      let o = OFFS[(oi - 1u + rot) % 27u];
+      if (o.x == 0 && o.y == 0 && o.z == 0) { continue; } // already visited
+      gx = cx + o.x;
+      gy = cy + o.y;
+      gz = cz + o.z;
+      cellCap = MAX_NEIGHBORS;
+    }
     if (gx < 0 || gx >= D || gy < 0 || gy >= D || gz < 0 || gz >= D) {
       continue;
     }
@@ -602,7 +622,7 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
     if (cnt == 0u) { continue; }
     let off = pcg(rot ^ cell) % cnt;
     for (var e = 0u; e < cnt; e++) {
-      if (found >= MAX_NEIGHBORS) { break; }
+      if (found >= cellCap) { break; }
       let j = gridEntries[start + ((off + e) % cnt)];
       if (j == i) { continue; }
       let jd = dynIn[j];
@@ -614,6 +634,13 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
       if (dist < sepR) {
         let w = 1.0 - dist / sepR;
         sep -= d3 * (w * w / dist);
+        // Collision pushout: sampled violators this deep shove hard —
+        // sampling catches an overlapping pair-mate rarely, so each catch
+        // must do the work the reference's every-frame scan did.
+        let hard = 1.0 - dist / (sepR * PAIR_RANGE);
+        if (hard > 0.0) {
+          hardPush -= (d3 / dist) * (hard * PAIR_PUSH);
+        }
       }
       coh += jd.pe.xyz;
       aln += jd.vf.xyz;
@@ -660,22 +687,48 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
   if (fearI < 0.005) { fearI = 0.0; }
 
   // Predator proximity, depth-squashed, measured against the lead point.
+  // The danger zone is a hunter's: at rest it's the reference's sphere, at
+  // speed it stretches into a lunge along the heading and narrows at the
+  // flanks (a wedge). Behind-reach is untouched — dropping aft into the
+  // wake is the fountain's escape and must stay safe. uNorm is the
+  // dimensionless "how deep into the danger zone" (1 = boundary).
   var pd = vec3f(0.0);
   var pdist = 1e9;
+  var uNorm = 1e9;
   if (pointerOn) {
     pd = pos - lead;
-    let pdzS = pd.z * 0.45;
-    pdist = max(sqrt(pd.x * pd.x + pd.y * pd.y + pdzS * pdzS), 1e-4);
+    let pdS = vec3f(pd.x, pd.y, pd.z * 0.45);
+    pdist = max(length(pdS), 1e-4);
+    uNorm = pdist / mouseR;
+    let s01 = min(1.0, pvm / WEDGE_SPEED_REF);
+    if (s01 > 1e-3) {
+      let along = dot(pdS, vhat);
+      let perp = max(sqrt(max(dot(pdS, pdS) - along * along, 0.0)), 1e-5);
+      let rAlong = mouseR * (1.0 + WEDGE_AHEAD * s01 * step(0.0, along));
+      let rSide = mouseR * (1.0 - WEDGE_SIDE * s01);
+      let a = along / rAlong;
+      let p = perp / rSide;
+      uNorm = max(sqrt(a * a + p * p), 1e-4);
+    }
   }
-  let threatNear = pdist < mouseR * 1.4;
+  let threatNear = uNorm < 1.4;
   // Smoothstep falloff inside the danger zone — used by the escape steering
   // below and by the crowd-pressure compensation in separation (§5: at 50k
   // the dense wall around the cleared column would otherwise shove fresh
   // fish inward through pure separation pressure).
   var predFall = 0.0;
+  if (pointerOn && uNorm < 1.0) {
+    predFall = 1.0 - uNorm * uNorm * (3.0 - 2.0 * uNorm);
+  }
+  // Lasting fear keeps the reference sphere's semantics: the wedge's long
+  // forward reach makes fish *evade* an approaching hunter early, but only
+  // genuine proximity marks them (v3 fear = contact). Without this split
+  // the pre-alarmed cohort ahead of a sweep — alarmed but not yet turned —
+  // floods the fear population with cruise-heading fish.
+  var fearFall = 0.0;
   if (pointerOn && pdist < mouseR) {
-    let u01 = pdist / mouseR;
-    predFall = 1.0 - u01 * u01 * (3.0 - 2.0 * u01);
+    let uS = pdist / mouseR;
+    fearFall = 1.0 - uS * uS * (3.0 - 2.0 * uS);
   }
 
   // After a strike, far-flung survivors commit to returning.
@@ -689,6 +742,7 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
 
   // ---- Steering forces ----
   var acc = vec3f(0.0);
+  var pairKick = vec3f(0.0);
   let maxSpeed = maxSpeedBase * spdF
     * (1.0 + energy * E_SPEED_BOOST + fearI * F_SPEED_BOOST);
 
@@ -697,19 +751,30 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
     let sl = length(sep);
     if (sl > 1e-5) {
       let s = clampLen((sep / sl) * maxSpeed - vel, MAX_FORCE);
-      var sw = separationW;
       // During an inburst, lit particles let the crowd condense — when the
       // flash fades, separation snaps back and the bubble pops.
+      var relaxMul = 1.0;
       if (pulseSign < 0.0) {
-        sw *= 1.0 - min(1.0, energy) * INBURST_RELAX;
+        relaxMul *= 1.0 - min(1.0, energy) * INBURST_RELAX;
       }
       // Crowd-pressure relief around the predator: inside the column the
       // wall must not shove fish back in, and frightened fish near the
       // threat shoulder through the crowd instead of jamming against
       // personal space — at 20× density the panic wave has to move bodies.
       let panicRelax = max(predFall, select(0.0, fearI, threatNear));
-      sw *= 1.0 - panicRelax * PRED_SEP_RELAX;
-      acc += s * sw;
+      relaxMul *= 1.0 - panicRelax * PRED_SEP_RELAX;
+      acc += s * (separationW * relaxMul);
+      // Collision pushout obeys the same relaxes (inbursts must condense)
+      // and vanishes with the user's separation slider. Fear damps it and
+      // the threat's whole neighborhood disables it: threatened schools
+      // pack tighter, collision noise would decohere the fountain's parting
+      // velocity field, and shoves at the cleared column's compressed wall
+      // would pump fish *into* the vacancy. It integrates beside acc rather
+      // than through it: dodging a neighbor is not agitation, so it must
+      // not trip the shear-glow knee.
+      pairKick = hardPush
+        * (min(1.0, separationW) * relaxMul * (1.0 - fearI)
+          * select(1.0, 0.0, threatNear));
     }
 
     if (mode == FLOCK) {
@@ -822,7 +887,7 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
 
   // ---- Pointer: a predator to escape (fountain maneuver + wake) ----
   if (pointerOn) {
-    if (pdist < mouseR) {
+    if (uNorm < 1.0) {
       let fall = predFall;
 
       var e3 = pd / pdist;
@@ -855,7 +920,8 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
       );
 
       // Contact with the predator instills lasting fear.
-      if (fall > fearI) { fearI = fall; }
+      // Contact fear uses the sphere falloff, not the wedge's (see above).
+      if (fearFall > fearI) { fearI = fearFall; }
 
       // Fast movement excites the swarm → cascades bursting away from the
       // predator's bow like a wake.
@@ -923,7 +989,7 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
   }
 
   // ---- Integrate ----
-  vel = (vel + acc * dt) * dragF;
+  vel = (vel + (acc + pairKick) * dt) * dragF;
   let sp2 = dot(vel, vel);
   let cap = maxSpeed * select(1.0, 0.85, mode == WANDER) + 0.4;
   if (sp2 > cap * cap) {

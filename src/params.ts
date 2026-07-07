@@ -86,11 +86,12 @@ export const GPU_TUNING = {
    * — where v3 counted every lit neighbor at full strength. That starves
    * "spark carriers" (lit fish that fly a perception radius while still
    * contagious and re-seed the burn indefinitely in dense fuel — the
-   * cascades-never-die failure), but it also slows the fresh wavefront by
-   * the mean heat factor (~0.6). This scale rebalances the front so the
-   * click-cascade growth curve matches the measured CPU reference.
+   * cascades-never-die failure). At 1.0 the click-cascade growth curve
+   * matches the measured CPU reference: the heat-weighting's front slowdown
+   * and the own-cell quota's closer (hotter) samples cancel. Retune this
+   * first if the sampling scheme changes — it's the calibration dial.
    */
-  transmissionScale: 2.0,
+  transmissionScale: 1.25,
   /**
    * Refractory re-derivation at 50k (invariant §4.3: refractory must exceed
    * the cascade's crossing time, "re-derive this at 50k"). The wave crosses
@@ -101,7 +102,7 @@ export const GPU_TUNING = {
    * the same ~1.5× restores the reference's refractory/crossing ratio and
    * starves the spiral. Applied host-side; the user slider keeps meaning.
    */
-  refractoryScale: 1.6,
+  refractoryScale: 1.75,
   /**
    * Crowd-pressure compensation around the predator (HANDOFF §5 "kick vs
    * crowd pressure", §6 predator signatures). Two jams at 50k the reference
@@ -114,15 +115,56 @@ export const GPU_TUNING = {
    */
   predatorSepRelax: 0.8,
   /**
-   * Fear-spread compensation for fair neighbor sampling (same §5 family and
+   * Fear-spread compensation for sampled neighbors (same §5 family and
    * mechanism as transmissionScale): panic spreads toward 0.92× the
-   * *sampled* max neighbor fear, and 16-of-~800 random samples lag the true
-   * front of a moving panic wave — a fast sweep panics ~4× less of the
-   * school than the reference, whose cell-order neighbors hug the front.
-   * Scaling the approach rate restores the reference's spread reach; the
-   * 0.92-of-max ceiling semantics are untouched.
+   * *sampled* max neighbor fear, which lags the true front of a moving
+   * panic wave. The own-cell quota supplies front-hugging samples (like
+   * v3's cell-order scan), so only a small rate boost remains — tuned so a
+   * fast sweep panics slightly more of the school than the reference
+   * (~14%), erring lively because 20× more non-reacting bodies dilute the
+   * visible reaction. The 0.92-of-max ceiling semantics are untouched.
    */
-  fearSpreadScale: 2.5,
+  fearSpreadScale: 1.0,
+  /**
+   * Of the 16-neighbor cap, this many are taken from the particle's own
+   * grid cell (random in-cell offset) before the hash-rotated fair sweep
+   * fills the rest. Pure fair sampling starves close-range separation at
+   * 50k — knot-mates inside a clump almost never sample each other (16 of
+   * ~800 candidates), so fish pair up into overlapping blobs: measured 36%
+   * of the school with a nearest neighbor < 0.12 u vs ~7% for random
+   * placement. The quota guarantees personal space sees the actual
+   * neighbors; the remaining samples keep cohesion/alignment fair. Costs
+   * nothing — same 16 reads, re-aimed. The v3 reference's cell-order scan
+   * had this locality implicitly (it read its own cell first).
+   */
+  ownCellQuota: 8,
+  /**
+   * Collision pushout for sampled personal-space violators, the other half
+   * of the anti-clump story. Even with the own-cell quota, a pair-mate is
+   * one fish among ~130 in the cell — sampled maybe 6% of frames — while
+   * cohesion pulls every frame, so overlapped pairs persist (the v3 scan
+   * caught mates every frame; sampling can't). Compensate rarity with
+   * strength: when a violator inside pairPushRange×sepR *is* sampled, it
+   * gets a hard shove (u/s², deliberately above MAX_FORCE — a collision
+   * response, not steering) whose expected time-average matches the
+   * reference's continuous separation. Same §5 sampling-normalization
+   * family as transmissionScale / fearSpreadScale. Respects the inburst
+   * and predator separation relaxes, so condensation still pops.
+   */
+  pairPush: 40,
+  pairPushRange: 0.3,
+  /**
+   * The hunter wedge (owner's ask): at speed, the predator's danger zone
+   * elongates along its heading and narrows at the flanks — a lunge, not a
+   * bubble — relaxing back to the reference's sphere at rest. Ahead reach
+   * grows by wedgeAhead×, flank reach shrinks by wedgeSide× at full speed;
+   * full speed = wedgeSpeedRef in world u/s of pointer velocity. The
+   * behind-reach is untouched: prey dropping aft of the predator is the
+   * fountain's "safe wake" beat and must stay safe.
+   */
+  wedgeAhead: 0.6,
+  wedgeSide: 0.1,
+  wedgeSpeedRef: 25,
   /** Compute workgroup size for the per-particle kernels. */
   workgroupSize: 64,
   /** Max host→GPU events applied per frame (burst/startle/vanguard/...). */

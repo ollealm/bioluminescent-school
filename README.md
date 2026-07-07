@@ -82,7 +82,31 @@ rationale in place; user-facing sliders keep their v3 meaning throughout.
 - **Neighbor sampling** — the 16-neighbor cap survives, but candidates are
   sampled with per-particle-per-frame hash-randomized cell order and
   in-cell offsets instead of v3's grid-cell-order bias (which would read
-  as anisotropy at 50k).
+  as anisotropy at 50k). Half the cap (`ownCellQuota`) is reserved for the
+  particle's own cell: pure fair sampling starves close-range separation
+  (knot-mates almost never sample each other among ~800 candidates) and
+  fish paired up into overlapping blobs — 36% of the school had a nearest
+  neighbor < 0.12 u vs ~7% for random placement.
+- **Collision pushout** (`pairPush`) — the other half of anti-clumping:
+  even quota'd, an overlapped pair-mate is sampled only ~6% of frames while
+  cohesion pulls every frame, so each sampled violation shoves hard enough
+  that the expected time-average matches v3's every-frame separation scan.
+  Fear damps it (threatened schools pack tighter; collision noise would
+  decohere the fountain) and it disables near the predator (shoves at the
+  cleared column's compressed wall would pump fish into the vacancy). It
+  bypasses the shear-glow sense — dodging a neighbor is not agitation.
+  Result: overlap fraction 36% → 1.3%, below random — actively maintained
+  personal space, which is what real schooling looks like. Zero extra
+  memory traffic; the same 16 reads, re-aimed.
+- **The hunter wedge** (`wedgeAhead`/`wedgeSide`/`wedgeSpeedRef`, owner's
+  ask) — at speed the danger zone stretches into a lunge along the heading
+  (+60% reach) with slightly tapered flanks, relaxing to v3's sphere at
+  rest. Lasting *fear* keeps the reference sphere's contact semantics: the
+  wedge makes prey evade the approaching hunter early, but only genuine
+  proximity marks them. Prey ahead of the lunge is herded forward-sideways
+  before it parts and falls behind — richer choreography than v3's, with
+  the aggregate fountainDot cancelling toward 0 *by construction*; the
+  wedge-aware signature is `fountainBehindDot` (see acceptance).
 - **Contagion is heat-weighted** (`transmissionScale`). At 50k a lit fish
   is a *spark carrier*: the radial kick flies it a full perception radius
   while still contagious, and with fuel everywhere the burn re-seeds
@@ -105,14 +129,13 @@ rationale in place; user-facing sliders keep their v3 meaning throughout.
   visibly shatters the crowd. One honest density effect remains: a
   mid-school park is still *clearing* at the reference's 1.5 s mark (20×
   more bodies moving through each other).
-- **Fear spread is rate-compensated** (`fearSpreadScale`): panic spreads
-  toward 0.92× the *sampled* max neighbor fear, and 16-of-~800 fair
-  samples lag the front of a moving panic wave — a fast sweep panicked
-  ~4× less of the school than the reference (whose cell-order neighbors
-  hug the front) and the strike read as a foreground-only flinch. Scaling
-  the approach rate ×2.5 restores the reference's spread reach (sweep
-  panic: reference ~14% of school, fork 20–27%); the ceiling semantics
-  are untouched.
+- **Fear spread under sampling** (`fearSpreadScale`): panic spreads toward
+  0.92× the *sampled* max neighbor fear. Under pure fair sampling that
+  lagged the front of a moving panic wave ~4× (the strike read as a
+  foreground-only flinch, needing a ×2.5 rate boost); the own-cell quota
+  supplies front-hugging samples like v3's cell-order scan did, so the
+  compensation is back to 1.0 — the quota carries it. Ceiling semantics
+  untouched throughout.
 - **Absolute counts → fractions** — wander group size is read as "fish per
   2,600" and recruited by probability; scatter's 12 ignition seeds became
   `scatterIgniteFrac`.
@@ -128,7 +151,8 @@ rationale in place; user-facing sliders keep their v3 meaning throughout.
 | cascade extinguishes ≤ 5 s | true (fails ~1 in 4 runs) | true (10/10 runs) | true |
 | outburst outward coherence | 0.86 | 0.99 | ≳ 0.7 |
 | inburst inward coherence | 0.49 | 0.85 | ≳ 0.55 |
-| fountain (mean dot vs travel) | −0.58 | −0.33 … −0.72 across runs | < −0.2 |
+| fountain (mean dot vs travel) | −0.58 | ~0 by construction (hunter wedge herds prey forward before it parts) | < −0.2 on v3's zone shape |
+| fountain, behind cohort (drop-behind beat) | ≈ fountainDot | −0.45 … −0.49 across runs | < −0.2 |
 | predator vacancy @1.5 s / 3 s | 0 / 8 | 93 / 706 (mid-school park; 0 when off-school) | ~0 (see §5 notes) |
 | panic reach | 0.22 | 0.59 | ≳ 0.2 |
 | moods seen in 120 s | all 5 | all 5 | all 5 |
