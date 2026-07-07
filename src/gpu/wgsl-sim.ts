@@ -808,7 +808,9 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
     pdist = max(length(pdS), 1e-4);
     uNorm = pdist / mouseR;
     let s01 = min(1.0, pvm / WEDGE_SPEED_REF);
-    if (s01 > 1e-3) {
+    // Constant-folds away when both wedge dials are 0 (the shipped state:
+    // the owner reverted early-reaction as illegible — see GPU_TUNING).
+    if ((WEDGE_AHEAD > 0.0 || WEDGE_SIDE > 0.0) && s01 > 1e-3) {
       let along = dot(pdS, vhat);
       let perp = max(sqrt(max(dot(pdS, pdS) - along * along, 0.0)), 1e-5);
       let rAlong = mouseR * (1.0 + WEDGE_AHEAD * s01 * step(0.0, along));

@@ -161,16 +161,18 @@ export const GPU_TUNING = {
   fineGridDim: 64,
   fineCellSize: 0.45,
   /**
-   * The hunter wedge (owner's ask): at speed, the predator's danger zone
-   * elongates along its heading and narrows at the flanks — a lunge, not a
-   * bubble — relaxing back to the reference's sphere at rest. Ahead reach
-   * grows by wedgeAhead×, flank reach shrinks by wedgeSide× at full speed;
-   * full speed = wedgeSpeedRef in world u/s of pointer velocity. The
-   * behind-reach is untouched: prey dropping aft of the predator is the
-   * fountain's "safe wake" beat and must stay safe.
+   * The hunter wedge: at speed the danger zone would elongate along the
+   * heading (wedgeAhead×) and taper at the flanks (wedgeSide×), relaxing to
+   * the reference's sphere at rest. Tried and REVERTED to 0 by the owner:
+   * fish reacting ahead of the visible cursor read as *randomness*, not
+   * hunting — casual mouse movement triggered reactions with no legible
+   * cause. Cause-and-effect legibility beats predator realism; the strike
+   * (below) carries the hunter fantasy instead, because it's tied to a
+   * deliberate gesture. Machinery kept in the kernel for experimentation;
+   * both at 0 the zone is exactly v3's sphere.
    */
-  wedgeAhead: 1.1,
-  wedgeSide: 0.1,
+  wedgeAhead: 0,
+  wedgeSide: 0,
   wedgeSpeedRef: 25,
   /**
    * The strike (owner's ask, round two): a flick — pointer at rest bursting

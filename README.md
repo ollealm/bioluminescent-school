@@ -101,15 +101,18 @@ rationale in place; user-facing sliders keep their v3 meaning throughout.
   fountain), disables near the predator (wall shoves would pump fish into
   the cleared column), and bypasses the shear-glow sense — dodging a
   neighbor is not agitation.
-- **The hunter wedge** (`wedgeAhead`/`wedgeSide`/`wedgeSpeedRef`, owner's
-  ask) — at speed the danger zone stretches into a lunge along the heading
-  (+110% reach) with slightly tapered flanks, relaxing to v3's sphere at
-  rest. Lasting *fear* keeps the reference sphere's contact semantics: the
-  wedge makes prey evade the approaching hunter early, but only genuine
-  proximity marks them. Prey ahead of the lunge is herded forward-sideways
-  before it parts and falls behind — richer choreography than v3's, with
-  the aggregate fountainDot cancelling toward 0 *by construction*; the
-  wedge-aware signature is `fountainBehindDot` (see acceptance).
+- **The hunter wedge — tried and reverted** (`wedgeAhead`/`wedgeSide`, now
+  0): at speed the danger zone stretched into a lunge along the heading.
+  Owner verdict after use: fish reacting ahead of the visible cursor read
+  as *randomness*, not hunting — casual mouse movement triggered reactions
+  with no legible cause. Cause-and-effect legibility beats predator
+  realism; the influence zone is exactly v3's sphere again (the branch
+  constant-folds out of the kernel) and the strike carries the hunter
+  fantasy instead. The aggregate fountainDot still reads near 0 on this
+  fork — the rate-compensated fear spread panics ~2× more of the school
+  than v3 (lively by taste), and the spread-feared crowd swamps the
+  directly-fleeing cohort — so the fountain signature to hold is
+  `fountainBehindDot` (see acceptance).
 - **The strike** (`strikeSpeed`/`strikeCooldown`, owner's ask) — a flick
   (pointer at rest bursting past 32 u/s) detonates a directional V-blast
   at the lunge tip: fish part hard away from the strike line with
