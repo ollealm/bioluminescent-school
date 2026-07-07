@@ -101,6 +101,8 @@ export class GpuSwarm implements SwarmSystem {
 
   private device: GPUDevice;
   private count = 0;
+  /** Allocated particle slots; count ≤ capacity. Grows only on demand. */
+  private capacity = 0;
 
   // --- GPU resources (rebuilt with the particle count) ---
   private dyn: [GPUBuffer, GPUBuffer] | null = null;
@@ -317,10 +319,24 @@ export class GpuSwarm implements SwarmSystem {
     };
   }
 
-  /** Recreate all buffers for a new particle count. Params are untouched. */
+  /**
+   * Reset the swarm to a fresh spawn at the given count (v3 rebuild
+   * semantics — the harness relies on this giving every probe a clean
+   * field). Buffers are only reallocated when the count outgrows the
+   * allocated capacity; otherwise the respawn happens in place.
+   */
   rebuild(count: number): void {
     count = Math.max(64, Math.floor(count));
+    if (this.dyn && count <= this.capacity) {
+      this.count = count;
+      this.initParticles();
+      this.parity = 0;
+      this.centroid = { x: 0, y: 0, z: 0 };
+      this.flockN = count;
+      return;
+    }
     this.destroyBuffers();
+    this.capacity = count;
     this.count = count;
     const dev = this.device;
 
@@ -332,15 +348,15 @@ export class GpuSwarm implements SwarmSystem {
       });
 
     this.dyn = [
-      mkStorage(count * 48, "dynA"),
-      mkStorage(count * 48, "dynB"),
+      mkStorage(this.capacity * 48, "dynA"),
+      mkStorage(this.capacity * 48, "dynB"),
     ];
-    this.selfB = mkStorage(count * 32, "self");
-    this.statB = mkStorage(count * 32, "stat");
+    this.selfB = mkStorage(this.capacity * 32, "self");
+    this.statB = mkStorage(this.capacity * 32, "stat");
     this.gridCount = mkStorage(CELLS * 4, "gridCount");
     this.gridStart = mkStorage((CELLS + 1) * 4, "gridStart");
     this.gridCursor = mkStorage(CELLS * 4, "gridCursor");
-    this.gridEntries = mkStorage(count * 4, "gridEntries");
+    this.gridEntries = mkStorage(this.capacity * 4, "gridEntries");
     this.eventsB = mkStorage(this.eventData.byteLength, "events");
     // [0] centroid+flockN, [1] stats, then 2×64 partial blocks.
     this.centroidB = mkStorage(16 * (2 + 2 * REDUCE_WGS), "centroid");
@@ -367,9 +383,62 @@ export class GpuSwarm implements SwarmSystem {
     this.generation++;
   }
 
-  /** Port of the reference's spawn: soft sphere + a few shell whiskers. */
+  /**
+   * Change the particle count *without* resetting the school — the living
+   * swarm keeps swimming. Shrinking simply deactivates the tail; growing
+   * revives dormant slots in a soft sphere around the current centroid so
+   * newcomers surface inside the school instead of teleporting the world.
+   * The density-compensated brightness keeps the perceived mass steady, so
+   * the frame-time governor can breathe the count up and down invisibly.
+   * Falls back to a full respawn only when outgrowing the allocation.
+   */
+  resize(count: number): void {
+    count = Math.max(64, Math.floor(count));
+    if (!this.dyn || count > this.capacity) {
+      this.rebuild(count);
+      return;
+    }
+    if (count > this.count) this.reviveRange(this.count, count);
+    this.count = count;
+  }
+
+  /** Wake dormant slots [from, to) near the school's current center. */
+  private reviveRange(from: number, to: number): void {
+    const n = to - from;
+    const cen = this.centroid;
+    const R = this.params.containRadius;
+    const dyn = new Float32Array(n * 12);
+    const selfD = new Float32Array(n * 8);
+    for (let i = 0; i < n; i++) {
+      const r = R * 0.7 * Math.cbrt(Math.random());
+      const theta = Math.random() * Math.PI * 2;
+      const cosPhi = Math.random() * 2 - 1;
+      const sinPhi = Math.sqrt(1 - cosPhi * cosPhi);
+      const d = i * 12;
+      dyn[d] = cen.x + r * sinPhi * Math.cos(theta);
+      dyn[d + 1] = cen.y + r * sinPhi * Math.sin(theta);
+      dyn[d + 2] = cen.z + r * cosPhi;
+      dyn[d + 4] = (Math.random() - 0.5) * 0.6;
+      dyn[d + 5] = (Math.random() - 0.5) * 0.6;
+      dyn[d + 6] = (Math.random() - 0.5) * 0.6;
+      // energy/fear/pulse zero.
+      selfD[i * 8 + 2] = Math.random() * 1.5; // gaitClock; rest zero = FLOCK
+    }
+    const q = this.device.queue;
+    q.writeBuffer(this.dyn![0], from * 48, dyn);
+    q.writeBuffer(this.dyn![1], from * 48, dyn);
+    q.writeBuffer(this.selfB, from * 32, selfD);
+    // Statics (color/size/personality) were initialized for the full
+    // capacity and stay valid across sleep/wake cycles.
+  }
+
+  /**
+   * Port of the reference's spawn: soft sphere + a few shell whiskers.
+   * Fills the full allocated capacity so resize() can activate dormant
+   * particles later without touching statics.
+   */
   private initParticles(): void {
-    const n = this.count;
+    const n = this.capacity;
     const R = this.params.containRadius;
     const dyn = new Float32Array(n * 12);
     const selfD = new Float32Array(n * 8);
@@ -424,7 +493,7 @@ export class GpuSwarm implements SwarmSystem {
     const palette: Palette = PALETTES[this.paletteName];
     const stops = palette.stops.map(hexToRgb);
     const accent = hexToRgb(palette.accent);
-    for (let i = 0; i < this.count; i++) {
+    for (let i = 0; i < this.capacity; i++) {
       let rgb: [number, number, number];
       if (Math.random() < palette.accentChance) {
         rgb = [...accent];

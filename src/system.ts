@@ -28,6 +28,13 @@ export interface SwarmSystem {
   applySnapshot(s: Partial<Snapshot>): void;
   /** Recreate all particle state for a new count. Params are untouched. */
   rebuild(count: number): void;
+  /**
+   * Optional: change the count without resetting the school (the GPU
+   * backend thins/revives in place). Callers that can't tolerate a full
+   * respawn (count slider, frame-time governor) prefer this when present;
+   * the harness always uses rebuild for a clean field.
+   */
+  resize?(count: number): void;
 
   /** Pointer in NDC ([-1,1]²); projected onto the z=0 swarm plane inside. */
   updateMousePosition(ndc: { x: number; y: number }): void;

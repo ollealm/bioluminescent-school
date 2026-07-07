@@ -390,7 +390,11 @@ export class DevPanel {
       this.countOut.textContent = this.countInput.value;
       window.clearTimeout(this.rebuildTimer);
       this.rebuildTimer = window.setTimeout(() => {
-        sys.rebuild(Number(this.countInput.value));
+        const next = Number(this.countInput.value);
+        // Thin/grow the living school when the backend can; only fall back
+        // to a full respawn (v3 behavior) when it can't.
+        if (sys.resize) sys.resize(next);
+        else sys.rebuild(next);
         this.save();
       }, 350);
     });
@@ -403,7 +407,7 @@ export class DevPanel {
     countHint.appendChild(countDots);
     countHint.appendChild(
       document.createTextNode(
-        "Particle count — rebuilds the swarm; first knob to turn if FPS drops",
+        "Particle count — first knob to turn if FPS drops",
       ),
     );
     root.appendChild(countHint);
