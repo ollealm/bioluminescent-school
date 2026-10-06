@@ -2,8 +2,10 @@
 
 An experimental rewrite of [bioluminescent-swarm](https://bioluminescent.vercel.app)
 (v3, ~2,600 particles, CPU) as **WebGPU compute**: the same living school of
-bioluminescent fish at **50,000 particles**, targeting 60 fps on Apple-silicon
-laptops and degrading gracefully below that.
+bioluminescent fish at **25,000 particles** by default (50k+ runs fine on
+Apple silicon; the owner's taste call was that 20-30k larger fish read more
+like a school than 50k dust), targeting 60 fps and degrading gracefully
+below that. Destined to be the background of olle.work.
 
 The behavior contract is `HANDOFF-GPU.md` in the reference repo: the four
 behavior layers, the taste law (in-hue glow never white, movement before
@@ -17,10 +19,44 @@ npm run dev        # http://localhost:5209
 npm run typecheck
 ```
 
-`?backend=cpu` forces the fallback; `?count=N` overrides the particle count.
+`?backend=cpu` forces the fallback; `?count=N` overrides the particle count;
+`?feel=<name>` boots into one of the `snapshots/*.json` feels (see below).
 Press **D** for the dev panel (same presets/palettes/sliders as v3; snapshots
 flow between versions unchanged — `snapshots/site-default.json` is the
 canonical tuned state both backends reproduce).
+
+## Calibrating the feel (the A/B loop)
+
+The hard part of this project is taste, so the tooling is built around
+comparing full parameter sets live:
+
+- **Feels** — every `snapshots/*.json` is a named feel. Keys **1–9** switch
+  between them in place (the school keeps swimming; a feel is a temperament,
+  not a density, so the snapshot's `count` is ignored), the URL updates to
+  `?feel=<name>` for sharing, and the panel's *Feel A/B* row shows which is
+  active. *Save feel…* downloads the current sliders as `<name>.json`; drop
+  it into `snapshots/` and it appears on reload. `site-default` is the v3
+  canonical state; `lifelike-a` is the current candidate for olle.work.
+- **Two GPU-only levers** added for the "constantly moving and collapsing in
+  on itself" brief (both default 0, so v3 snapshots are bit-identical):
+  `collapse` adds a *contract* mood to the director (the school condenses
+  toward its centroid with relaxed personal space, then releases into a
+  turn with a separation pop); `shape` makes cohesion anisotropic along the
+  school heading so a traveling shoal stretches instead of staying a ball.
+- **`await feel()`** in the console measures the live school for 30 s
+  (no rebuild, so tweak sliders first): elongation, edge sharpness, internal
+  density structure, breathing amplitude/period, velocity coherence swing,
+  and the refill time behind a parked cursor. Measured 2026-10-06 at 25k:
+
+  | | site-default | lifelike-a |
+  | --- | --- | --- |
+  | elongation (mean / max) | 1.21 / 1.28 | 1.42 / 1.71 |
+  | breathing amplitude | ±3 % | ±23 % |
+  | coherence swing (min…max) | 0.75…0.97 | 0.57…0.99 |
+  | moods in 45 s | cruise/turn/startle/hover | + contract |
+
+  The refill probe parks at the origin, so it is only meaningful while the
+  school sits there; with roam it mostly measures the school moving away.
 
 ## Architecture
 
@@ -176,8 +212,11 @@ rationale in place; user-facing sliders keep their v3 meaning throughout.
 Perf on Apple silicon (Metal 3, Chrome): **4.1 ms sim / 5.3 ms sim+render
 per step at 50,000** — the CPU reference spends 5.3 ms on 2,600. 100,000
 runs at 12.5 ms. Weaker WebGPU devices degrade via a frame-time governor
-that steps the count down (floor 8k); no WebGPU falls back to the vendored
-CPU v3 at its original counts.
+that steps the count down (floor 8k; a single stalled frame such as a tab
+switch is ignored, only sustained misses count); no WebGPU, or a
+software/fallback adapter, boots the vendored CPU v3 at its original counts.
+A lost GPU device (driver reset, GPU process crash) re-mounts the backend
+once with the current snapshot carried over, then falls back to CPU.
 
 ## Verification
 

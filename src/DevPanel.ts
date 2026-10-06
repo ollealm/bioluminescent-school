@@ -1,6 +1,7 @@
 import type { SwarmSystem } from "./system";
-import { PALETTES, STYLES, type PaletteName, type StyleName, type SwarmParams } from "./params";
+import { DEFAULT_PARAMS, PALETTES, STYLES, type PaletteName, type StyleName, type SwarmParams } from "./params";
 import { DEFAULT_PRESETS, PRESET_REGISTRY, type PresetCategory } from "./presets";
+import { urlFeel } from "./feel";
 
 const CATEGORY_LABELS: Record<PresetCategory, string> = {
   motion: "Movement",
@@ -52,6 +53,8 @@ const GROUPS: Group[] = [
       { key: "tempo", label: "Tempo", min: 0.1, max: 2.5, step: 0.05, impact: 3, hint: "How often the school changes its mind (cruise / turn / mill / hover)" },
       { key: "startle", label: "Startles", min: 0, max: 2, step: 0.05, impact: 2, hint: "Rate of spontaneous false alarms sweeping the school" },
       { key: "gait", label: "Gait", min: 0, max: 2, step: 0.05, impact: 2, hint: "Burst-and-glide swimming — thrust impulses, then coasting" },
+      { key: "collapse", label: "Collapse", min: 0, max: 2, step: 0.05, impact: 3, hint: "How often and how hard the school contracts in on itself, then releases" },
+      { key: "shape", label: "Body shape", min: 0, max: 1, step: 0.01, impact: 2, hint: "Stretch the school along its heading - a traveling shoal instead of a ball" },
     ],
   },
   {
@@ -207,6 +210,11 @@ const CSS = `
   padding: 7px 4px; cursor: pointer; transition: all .12s ease;
 }
 .blm-action:hover { border-color: rgba(96, 255, 178, 0.6); background: rgba(30, 120, 80, 0.3); }
+.blm-feels { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.blm-feel { text-align: left; padding-left: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.blm-feel-key { color: rgba(96, 255, 178, 0.45); margin-right: 6px; }
+.blm-feel.active .blm-feel-key { color: #7dffb0; }
+.blm-gpu-only { color: rgba(255, 209, 102, 0.6); margin-left: 4px; }
 .blm-foot { margin-top: 10px; font-size: 9px; color: rgba(150, 220, 185, 0.35); text-align: center; }
 @media (max-width: 640px) {
   .blm-panel { right: 10px; left: 10px; top: 10px; width: auto; max-height: 62vh; }
@@ -241,6 +249,12 @@ export class DevPanel {
   private rebuildTimer: number | undefined;
   private onKey: (e: KeyboardEvent) => void;
   private opts: Required<Pick<DevPanelOptions, "countMin" | "countMax" | "countStep" | "backendLabel">>;
+  private feelWrap!: HTMLDivElement;
+  private feelGrid!: HTMLDivElement;
+  private feelBtns = new Map<string, HTMLButtonElement>();
+  private feelName: string | null = null;
+  /** Set by installFeelSwitcher (src/feel.ts); Feel A/B buttons route through it. */
+  onFeelSelect: ((name: string) => void) | null = null;
 
   constructor(system: SwarmSystem, options: DevPanelOptions = {}) {
     this.system = system;
@@ -295,7 +309,37 @@ export class DevPanel {
       rounded >= 55 ? "#7dffb0" : rounded >= 30 ? "#ffd166" : "#ff7b7b";
   }
 
+  /** Populate the Feel A/B row; index i gets hotkey i+1 (first nine). */
+  setFeels(names: readonly string[]): void {
+    this.feelGrid.replaceChildren();
+    this.feelBtns.clear();
+    names.forEach((name, i) => {
+      const btn = el("button", "blm-preset blm-feel") as HTMLButtonElement;
+      if (i < 9) btn.appendChild(el("span", "blm-feel-key", String(i + 1)));
+      btn.appendChild(document.createTextNode(name));
+      btn.title = i < 9 ? `${name} (key ${i + 1})` : name;
+      btn.addEventListener("click", () => this.onFeelSelect?.(name));
+      this.feelBtns.set(name, btn);
+      this.feelGrid.appendChild(btn);
+    });
+    this.feelWrap.style.display = names.length ? "" : "none";
+    this.setFeelName(this.feelName);
+  }
+
+  /** Highlight the active feel (null = none, e.g. after a Reset). */
+  setFeelName(name: string | null): void {
+    this.feelName = name;
+    for (const [n, btn] of this.feelBtns) btn.classList.toggle("active", n === name);
+  }
+
+  /** The count slider's range - feels clamp their count to it (CPU stays small). */
+  get countRange(): { min: number; max: number } {
+    return { min: this.opts.countMin, max: this.opts.countMax };
+  }
+
   dispose(): void {
+    // A pending count debounce would resize a system that is being torn down.
+    window.clearTimeout(this.rebuildTimer);
     window.removeEventListener("keydown", this.onKey);
     this.root.remove();
     this.toggleBtn.remove();
@@ -332,6 +376,18 @@ export class DevPanel {
     head.appendChild(headRight);
     root.appendChild(head);
     applyDescs(localStorage.getItem(descKey) !== "0");
+
+    // Feel A/B - whole tuned snapshots, one keypress apart. Empty and
+    // hidden until installFeelSwitcher hands over the names (setFeels).
+    this.feelWrap = el("div", "") as HTMLDivElement;
+    this.feelWrap.style.display = "none";
+    this.feelWrap.appendChild(el("div", "blm-sub", "Feel A/B"));
+    this.feelGrid = el("div", "blm-feels") as HTMLDivElement;
+    this.feelWrap.appendChild(this.feelGrid);
+    this.feelWrap.appendChild(
+      el("div", "blm-hint", "Full snapshots from snapshots/*.json · keys 1-9 switch · ?feel=name in the URL shares one"),
+    );
+    root.appendChild(this.feelWrap);
 
     // Presets — one row of buttons per category, freely combinable.
     for (const cat of Object.keys(PRESET_REGISTRY) as PresetCategory[]) {
@@ -446,10 +502,23 @@ export class DevPanel {
     actions.appendChild(
       this.makeAction("↺ Reset", () => {
         localStorage.removeItem(this.storageKey);
+        // Every key, not just the preset-owned ones: a feel or slider tweak
+        // outside the presets' keys would otherwise survive the reset.
+        Object.assign(sys.params, DEFAULT_PARAMS);
+        sys.setPalette("emerald");
+        sys.setStyle("glow");
         for (const [cat, name] of Object.entries(DEFAULT_PRESETS)) {
           sys.applyPreset(cat as PresetCategory, name);
         }
         this.descEl.textContent = "mix a movement with a reaction · style & palette below";
+        // Drop the feel selection too, or a reload would re-apply it.
+        this.setFeelName(null);
+        const query = new URLSearchParams(location.search);
+        if (query.has("feel")) {
+          query.delete("feel");
+          const qs = query.toString();
+          history.replaceState(history.state, "", `${location.pathname}${qs ? "?" + qs : ""}${location.hash}`);
+        }
         this.refresh();
       }, "Restore all settings to defaults and clear saved tuning"),
     );
@@ -461,6 +530,10 @@ export class DevPanel {
           () => flash(btn, "copy failed"),
         );
       }, "Copy the current settings as a JSON snapshot for applySnapshot()"),
+    );
+    actions.appendChild(
+      this.makeAction("⤓ Save feel…", () => this.saveFeel(),
+        "Download the current settings as <name>.json - drop it into snapshots/ to make it a Feel A/B button"),
     );
     root.appendChild(actions);
 
@@ -505,6 +578,11 @@ export class DevPanel {
     dots.title = ["fine-tuning", "shapes the feel", "defines the feel"][def.impact - 1];
     hint.appendChild(dots);
     hint.appendChild(document.createTextNode(def.hint));
+    if (GPU_ONLY_KEYS.has(def.key)) {
+      const tag = el("span", "blm-gpu-only", "· GPU only");
+      tag.title = "The CPU fallback (v3 reference) ignores this parameter";
+      hint.appendChild(tag);
+    }
     wrap.appendChild(hint);
     return wrap;
   }
@@ -564,6 +642,24 @@ export class DevPanel {
     this.countOut.textContent = String(sys.getCount());
   }
 
+  private saveFeel(): void {
+    // Suggest the next letter after the active feel (lifelike-a -> lifelike-b).
+    const cur = this.feelName ?? "lifelike-a";
+    const m = /^(.*-)([a-y])$/.exec(cur);
+    const suggestion = m ? m[1] + String.fromCharCode(m[2].charCodeAt(0) + 1) : `${cur}-b`;
+    const raw = window.prompt("Save feel as (downloads <name>.json for snapshots/):", suggestion);
+    if (!raw) return;
+    const name = raw.trim().replace(/\.json$/i, "").replace(/[^\w.-]+/g, "-");
+    if (!name) return;
+    const json = JSON.stringify(this.system.getSnapshot(), null, 2) + "\n";
+    const url = URL.createObjectURL(new Blob([json], { type: "application/json" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${name}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
   private save(): void {
     try {
       localStorage.setItem(this.storageKey, JSON.stringify(this.system.getSnapshot()));
@@ -573,14 +669,27 @@ export class DevPanel {
   }
 
   private restore(): void {
+    // A ?feel= link is an explicit selection: the switcher applies it, and
+    // last session's auto-saved tweaks must not paint over it first.
+    if (urlFeel()) return;
     try {
       const raw = localStorage.getItem(this.storageKey);
-      if (raw) this.system.applySnapshot(JSON.parse(raw));
+      // Count is a density decision owned by boot (device class, ?count=,
+      // the governor), not a saved tweak: restoring a stale count would
+      // pin a desktop at last session's phone-sized school.
+      if (raw) {
+        const { count: _count, ...rest } = JSON.parse(raw) as Record<string, unknown>;
+        void _count;
+        this.system.applySnapshot(rest);
+      }
     } catch {
       localStorage.removeItem(this.storageKey);
     }
   }
 }
+
+/** Params only the GPU kernel implements (added after the v3 port). */
+const GPU_ONLY_KEYS = new Set<string>(["collapse", "shape"]);
 
 function el(tag: string, cls: string, text?: string): HTMLElement {
   const node = document.createElement(tag);

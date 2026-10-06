@@ -18,6 +18,7 @@ import {
 import { SNAPSHOT_VERSION, type Snapshot, type SwarmSystem } from "../system";
 import { SwarmCamera } from "./camera";
 import {
+  U_VEC4S,
   WGSL_GRID,
   WGSL_REDUCE,
   WGSL_RESOLVE,
@@ -26,13 +27,17 @@ import {
 } from "./wgsl-sim";
 import { GpuRenderer } from "./renderer";
 
-// School moods (whole-swarm director) — identical to the CPU reference.
+// School moods (whole-swarm director) - identical to the CPU reference,
+// plus CONTRACT (GPU-only, the `collapse` lever): the school condenses on
+// its centroid, then releases. Unreachable at collapse 0, so the default
+// FSM is exactly the reference's.
 const M_CRUISE = 0;
 const M_TURN = 1;
 const M_MILL = 2;
 const M_HOVER = 3;
 const M_STARTLE = 4;
-const MOOD_NAMES = ["cruise", "turn", "mill", "hover", "startle"];
+const M_CONTRACT = 5;
+const MOOD_NAMES = ["cruise", "turn", "mill", "hover", "startle", "contract"];
 
 // Event kinds — mirror the EV_* constants in wgsl-sim.ts.
 const EV_BURST = 1;
@@ -144,7 +149,7 @@ export class GpuSwarm implements SwarmSystem {
   // Host mirrors for statics so palette switches don't regenerate sizes.
   private staticsHost!: Float32Array;
 
-  private uniforms = new Float32Array(64);
+  private uniforms = new Float32Array(U_VEC4S * 4);
   private eventData = new ArrayBuffer(MAX_EVENTS * EVENT_STRIDE * 4);
   private eventF32 = new Float32Array(this.eventData);
   private eventU32 = new Uint32Array(this.eventData);
@@ -192,11 +197,14 @@ export class GpuSwarm implements SwarmSystem {
   private dirMill = 0;
   private dirDrive = 1;
   private dirSpeed = 0.6;
+  /** Separation gain (GPU-only): dips while contracting, pops on release. */
+  private dirSep = 1;
   private tgtAlign = 1;
   private tgtCoh = 1;
   private tgtMill = 0;
   private tgtDrive = 1;
   private tgtSpeed = 0.6;
+  private tgtSep = 1;
 
   constructor(device: GPUDevice, aspect: number, count: number) {
     this.device = device;
@@ -715,7 +723,11 @@ export class GpuSwarm implements SwarmSystem {
   private enterMood(mood: number): void {
     const P = this.params;
     const tempo = Math.max(0.25, P.tempo);
+    const prev = this.mood;
     this.mood = mood;
+    // Personal space is the reference's everywhere except the contraction
+    // and the turn that releases it.
+    this.tgtSep = 1;
 
     switch (mood) {
       case M_CRUISE:
@@ -734,6 +746,9 @@ export class GpuSwarm implements SwarmSystem {
         this.tgtMill = 0;
         this.tgtDrive = 1.5;
         this.tgtSpeed = 0.95;
+        // Released from a contraction, the school pops outward as it darts
+        // onto the new heading.
+        if (prev === M_CONTRACT) this.tgtSep = 1.25;
         this.pickNewHeading(70, 155);
         // Seed the turn through a vanguard cluster: one pocket darts onto
         // the new heading and alignment propagates it as a visible wave.
@@ -767,10 +782,35 @@ export class GpuSwarm implements SwarmSystem {
         this.tgtDrive = 0.9;
         this.tgtSpeed = 1.0;
         break;
+      case M_CONTRACT: {
+        // The school draws in on itself: cohesion swells, the shared will
+        // slackens, personal space gives a little, and a slight swirl keeps
+        // the condensing body alive. Still a gain - arrival damping
+        // (HANDOFF §4.1) bounds the squeeze, so it never becomes a ball.
+        const c = P.collapse;
+        this.moodTimer = (2.2 + Math.random() * 1.8) / tempo;
+        this.tgtAlign = 0.7;
+        this.tgtCoh = 1.0 + 1.1 * c;
+        this.tgtMill = 0.25;
+        this.tgtDrive = 0.25;
+        this.tgtSpeed = 0.35;
+        this.tgtSep = 1 - 0.35 * Math.min(1, c);
+        break;
+      }
     }
   }
 
   private pickNextMood(): number {
+    // Collapse diverts a share of cruise/mill exits into a contraction
+    // (35% at collapse 1). No draw at 0: the reference FSM, untouched.
+    const c = this.params.collapse;
+    if (
+      c > 0 &&
+      (this.mood === M_CRUISE || this.mood === M_MILL) &&
+      Math.random() < Math.min(0.7, 0.35 * c)
+    ) {
+      return M_CONTRACT;
+    }
     const r = Math.random();
     switch (this.mood) {
       case M_CRUISE:
@@ -781,6 +821,8 @@ export class GpuSwarm implements SwarmSystem {
         return r < 0.55 ? M_TURN : r < 0.75 ? M_HOVER : M_CRUISE;
       case M_HOVER:
         return r < 0.55 ? M_CRUISE : M_TURN;
+      case M_CONTRACT:
+        return r < 0.7 ? M_TURN : M_CRUISE;
       default:
         return M_CRUISE;
     }
@@ -841,6 +883,10 @@ export class GpuSwarm implements SwarmSystem {
     this.dirMill += (this.tgtMill - this.dirMill) * k;
     this.dirDrive += (this.tgtDrive - this.dirDrive) * k;
     this.dirSpeed += (this.tgtSpeed - this.dirSpeed) * k;
+    this.dirSep += (this.tgtSep - this.dirSep) * k;
+    // Snap home so an idle lever leaves the kernel's separation at exactly
+    // the user's weight (the ease alone only approaches 1 asymptotically).
+    if (Math.abs(this.tgtSep - this.dirSep) < 1e-4) this.dirSep = this.tgtSep;
   }
 
   // ------------------------------------------------------------------
@@ -1018,6 +1064,10 @@ export class GpuSwarm implements SwarmSystem {
     U[61] = P.regroup;
     U[62] = P.containRadius;
     U[63] = P.gait;
+    U[64] = this.dirSep;
+    U[65] = P.shape;
+    U[66] = 0;
+    U[67] = 0;
 
     // ---- Pack events ----
     const batch = this.pending.splice(0, MAX_EVENTS);
@@ -1211,15 +1261,29 @@ export interface GpuApp {
 }
 
 /** Boot the WebGPU backend: device, sim, canvas, renderer. Throws if the
- * device can't be created — the caller falls back to the CPU backend. */
+ * device can't be created — the caller falls back to the CPU backend.
+ *
+ * `lost` resolves when the device goes away under us (driver reset, GPU
+ * process crash, tab backgrounded on some mobile GPUs, or a debugging
+ * `device.destroy()` from the console) and never resolves for our own
+ * `dispose()` - so the caller can re-mount on it without filtering out
+ * intentional teardown. `device` is exposed for that debugging poke. */
 export async function createGpuApp(
   container: HTMLElement,
   adapter: GPUAdapter,
   count: number,
-): Promise<GpuApp> {
+): Promise<
+  GpuApp & { device: GPUDevice; lost: Promise<GPUDeviceLostInfo> }
+> {
   const device = await adapter.requestDevice({ label: "bioluminescent" });
   device.addEventListener("uncapturederror", (e) => {
     console.error("[webgpu]", (e as GPUUncapturedErrorEvent).error.message);
+  });
+  let disposing = false;
+  const lost = new Promise<GPUDeviceLostInfo>((resolve) => {
+    device.lost.then((info) => {
+      if (!disposing) resolve(info);
+    });
   });
 
   const canvas = document.createElement("canvas");
@@ -1227,19 +1291,33 @@ export async function createGpuApp(
 
   const width = window.innerWidth;
   const height = window.innerHeight;
-  const system = new GpuSwarm(device, width / Math.max(1, height), count);
-  const renderer = new GpuRenderer(device, canvas, system);
-  renderer.resize(width, height, window.devicePixelRatio || 1);
+  let system: GpuSwarm;
+  let renderer: GpuRenderer;
+  try {
+    system = new GpuSwarm(device, width / Math.max(1, height), count);
+    renderer = new GpuRenderer(device, canvas, system);
+    renderer.resize(width, height, window.devicePixelRatio || 1);
+  } catch (err) {
+    // The caller falls back to the CPU backend: leave no dead canvas over
+    // it and no live device behind it.
+    disposing = true;
+    canvas.remove();
+    device.destroy();
+    throw err;
+  }
 
   return {
     system,
+    device,
+    lost,
     render: () => renderer.render(),
     resize: (w, h, dpr) => {
       system.updateRendererSize(w / 2, h / 2);
       renderer.resize(w, h, dpr);
     },
     dispose: () => {
-      renderer.dispose();
+      disposing = true;
+      renderer.dispose(); // also removes the canvas
       system.dispose();
       device.destroy();
     },

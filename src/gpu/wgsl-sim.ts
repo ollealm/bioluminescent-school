@@ -7,8 +7,8 @@ import { GPU_TUNING, TUNING } from "../params";
  *
  * TUNING constants are baked in at pipeline creation, exactly as they are
  * compile-time constants in the reference. Everything runtime-tweakable
- * arrives through the U[16] vec4 uniform array; the slot map below is
- * mirrored by `U_SLOTS` in GpuSwarm.ts — keep them in lockstep.
+ * arrives through the U[U_VEC4S] vec4 uniform array; the slot map below is
+ * mirrored by the packing in GpuSwarm.update() - keep them in lockstep.
  *
  * Uniform slot map (flat f32 offsets in brackets):
  *   U[0]  dt, time, frame, activeCount
@@ -27,7 +27,11 @@ import { GPU_TUNING, TUNING } from "../params";
  *   U[13] kx, ky, kz, swirl
  *   U[14] jitter, wanderPull, returnPull, repelForce
  *   U[15] fleeForce, regroup, containRadius, gait
+ *   U[16] dirSep, shape, 0, 0           (lifelike levers; 1, 0 = v3 kernel)
  */
+
+/** Uniform array length in vec4s (80 floats). Shared with GpuSwarm.ts. */
+export const U_VEC4S = 20;
 
 const D = TUNING.gridDim;
 
@@ -160,7 +164,7 @@ fn fineCellOf(p: vec3f) -> u32 {
 export const WGSL_GRID = /* wgsl */ `
 ${WGSL_COMMON}
 
-@group(0) @binding(0) var<uniform> U: array<vec4f, 16>;
+@group(0) @binding(0) var<uniform> U: array<vec4f, ${U_VEC4S}>;
 @group(0) @binding(1) var<storage, read> dynIn: array<Dyn>;
 @group(0) @binding(2) var<storage, read_write> gridAtomics: array<atomic<u32>>;
 @group(0) @binding(3) var<storage, read_write> gridData: array<u32>;
@@ -259,7 +263,7 @@ fn scanFine(@builtin(local_invocation_index) lid: u32) {
 export const WGSL_RESOLVE = /* wgsl */ `
 ${WGSL_COMMON}
 
-@group(0) @binding(0) var<uniform> U: array<vec4f, 16>;
+@group(0) @binding(0) var<uniform> U: array<vec4f, ${U_VEC4S}>;
 @group(0) @binding(1) var<storage, read> dynIn: array<Dyn>;
 @group(0) @binding(2) var<storage, read_write> events: array<Ev>;
 @group(0) @binding(3) var<storage, read> centroid: array<vec4f>;
@@ -301,7 +305,7 @@ fn resolveEvents(@builtin(global_invocation_id) gid: vec3u) {
 export const WGSL_REDUCE = /* wgsl */ `
 ${WGSL_COMMON}
 
-@group(0) @binding(0) var<uniform> U: array<vec4f, 16>;
+@group(0) @binding(0) var<uniform> U: array<vec4f, ${U_VEC4S}>;
 @group(0) @binding(1) var<storage, read> dynOut: array<Dyn>;
 @group(0) @binding(2) var<storage, read> selfB: array<SelfState>;
 @group(0) @binding(3) var<storage, read_write> centroid: array<vec4f>;
@@ -383,7 +387,7 @@ fn reducePass2(@builtin(local_invocation_index) lid: u32) {
 export const WGSL_SIM = /* wgsl */ `
 ${WGSL_COMMON}
 
-@group(0) @binding(0) var<uniform> U: array<vec4f, 16>;
+@group(0) @binding(0) var<uniform> U: array<vec4f, ${U_VEC4S}>;
 @group(0) @binding(1) var<storage, read> dynIn: array<Dyn>;
 @group(0) @binding(2) var<storage, read_write> dynOut: array<Dyn>;
 @group(0) @binding(3) var<storage, read_write> selfB: array<SelfState>;
@@ -403,6 +407,14 @@ fn clampLen(v: vec3f, m: f32) -> vec3f {
   let l = length(v);
   if (l > m) { return v * (m / l); }
   return v;
+}
+
+// Body-shape anisotropy: soften the pull along the school's heading and
+// stiffen it across, so the body relaxes into a traveling shoal instead of
+// a ball. Callers skip it at shape 0 (the v3 kernel, untouched).
+fn shapeAniso(v: vec3f, head: vec3f, shape: f32) -> vec3f {
+  let par = dot(v, head) * head;
+  return par * (1.0 - 0.6 * shape) + (v - par) * (1.0 + 0.8 * shape);
 }
 
 // Port of igniteIndex(): light up, remember the cascade's epicenter, and
@@ -499,6 +511,8 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
   let regroup = U[15].y;
   let containRadius = U[15].z;
   let gaitP = U[15].w;
+  let dirSep = U[16].x;
+  let shape = U[16].y;
   let perception2 = perception * perception;
   let cen = centroid[0].xyz;
 
@@ -856,6 +870,9 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
     * (1.0 + energy * E_SPEED_BOOST + fearI * F_SPEED_BOOST);
 
   if (found > 0u) {
+    // The director's separation gain: < 1 while the school contracts, a
+    // brief > 1 pop on the release. Exactly 1.0 at collapse 0.
+    let sepW = separationW * dirSep;
     // During an inburst, lit particles let the crowd condense — when the
     // flash fades, separation snaps back and the bubble pops.
     var relaxMul = 1.0;
@@ -873,7 +890,7 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
     let sl = length(sep);
     if (sl > 1e-5) {
       let s = clampLen((sep / sl) * maxSpeed - vel, MAX_FORCE);
-      acc += s * (separationW * relaxMul);
+      acc += s * (sepW * relaxMul);
     }
 
     // Collision pushout obeys the same relaxes (inbursts must condense)
@@ -885,13 +902,17 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
     // than through it: dodging a neighbor is not agitation, so it must
     // not trip the shear-glow knee.
     pairKick = hardPush
-      * (min(1.0, separationW) * relaxMul * (1.0 - fearI)
+      * (min(1.0, sepW) * relaxMul * (1.0 - fearI)
         * select(1.0, 0.0, threatNear));
 
     if (mode == FLOCK) {
       // Cohesion with "arrival" damping (HANDOFF §4.1: without it the
       // swarm collapses into a ball).
       var t = coh / f32(found) - pos;
+      // Anisotropic cohesion (shape > 0): before arrival damping, so the
+      // damping still governs the body and the stretch is a gain, not a
+      // spring. Uniform branch - free at shape 0.
+      if (shape >= 0.001) { t = shapeAniso(t, head, shape); }
       let tl = length(t);
       if (tl > 1e-5) {
         let arrive = maxSpeed * min(1.0, tl / arriveR);
@@ -956,7 +977,10 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
     // the GPU-resident centroid instead of a host constant.
     let h = pos - roam;
     let reCenter = (roam - cen) * 0.22;
-    acc += -h * 0.02 + reCenter;
+    // The resting body elongates too: same anisotropy on the soft anchor.
+    var anchor = -h * 0.02;
+    if (shape >= 0.001) { anchor = shapeAniso(anchor, head, shape); }
+    acc += anchor + reCenter;
     let rHome = length(h);
     if (rHome > breatheR) {
       let over = rHome - breatheR;

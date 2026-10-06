@@ -297,6 +297,18 @@ export interface SwarmParams {
   startle: number;
   /** Burst-and-glide swimming intensity (thrust impulses, then coasting). */
   gait: number;
+  /**
+   * GPU-only. How often and how hard the school contracts in on itself, then
+   * releases (the director's CONTRACT mood). 0 = the reference FSM exactly;
+   * 1 sends ~35% of cruise/mill exits into a contraction.
+   */
+  collapse: number;
+  /**
+   * GPU-only. Stretches the school along its heading: anisotropic cohesion
+   * (weaker along, stronger across) so it travels as a shoal, not a ball.
+   * 0 = the reference's isotropic cohesion.
+   */
+  shape: number;
 
   // --- Ambient motion ---
   flowStrength: number;
@@ -366,6 +378,8 @@ export const DEFAULT_PARAMS: SwarmParams = {
   tempo: 1.0,
   startle: 0.5,
   gait: 0.8,
+  collapse: 0,
+  shape: 0,
 
   flowStrength: 0.9,
   flowScale: 0.09,

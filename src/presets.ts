@@ -31,6 +31,8 @@ export const MOTION_KEYS: (keyof SwarmParams)[] = [
   "tempo",
   "startle",
   "gait",
+  "collapse",
+  "shape",
   "flowStrength",
   "flowScale",
   "swirl",
