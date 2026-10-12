@@ -371,6 +371,12 @@ export interface SwarmParams {
    * so with panic spread the hit fish take neighbors with them. 0 = v3.
    */
   flight: number;
+  /**
+   * GPU-only. How violently frightened fish rush back to the school's
+   * center once the threat is gone: they drive for the centroid (not just
+   * the edge) and overshoot through it. 0 = v3.
+   */
+  rally: number;
   repelForce: number;
   splash: number;
   /** How hard frightened particles keep swimming away from the cursor. */
@@ -452,6 +458,7 @@ export const DEFAULT_PARAMS: SwarmParams = {
   mouseRadius: 6.5,
   bite: 0,
   flight: 0,
+  rally: 0,
   repelForce: 38,
   splash: 1.0,
   fleeForce: 30,

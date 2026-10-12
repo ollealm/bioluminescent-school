@@ -1140,6 +1140,7 @@ export class GpuSwarm implements SwarmSystem {
     // Clamped below 1: WGSL smoothstep is undefined when its edges meet.
     U[66] = Math.min(0.9, Math.max(0, P.bite ?? 0));
     U[67] = P.flight ?? 0;
+    U[68] = P.rally ?? 0;
 
     // ---- Pack events ----
     const batch = this.pending.splice(0, MAX_EVENTS);

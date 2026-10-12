@@ -87,6 +87,21 @@ comparing full parameter sets live:
   predator change with a parked cursor *and* a continuous stir. Spontaneous light was made subtle at the same time (spontaneous
   0.2, flashBrightness 0.55, kick 1.6; transmission stays 2.8 because at 2.2
   click cascades no longer grew and smoldered past the 5 s bar).
+- `rally` (round five, owner: "the regroup should be dynamic, chaotic,
+  violent - fish wanting the center of the school, not just the edge"):
+  once flight ends, fish drive straight at the centroid with no distance
+  gate and no arrival damping, with a raised speed cap, so they overshoot
+  through it and the body pulses. Chosen by a 16-combination sweep
+  (rally × regroup × fearDecay × flight, each run as a 3 s cursor stir then
+  5 s of recovery, with the school's RMS radius traced to measure
+  overshoot) plus one Haiku reviewer per filmstrip and a Fable pass over
+  the top candidates. Three candidate feels ship beside `olle-work`:
+  `rally-tight` (rally 0.5, regroup 3, decay 1.5, flight 0.5: a clean snap
+  into a core at ~60% of resting size), `rally-pulse` (0.7 / 4 / 2.0 / 0.6:
+  the school is carved into lobes, then compact again within ~2 s) and
+  `rally-storm` (1.0 / 5 / 2.5 / 0.8: tears into lobes and voids for two
+  seconds, then reassembles). Full rally with slow decay (1.0 / 5 / 1.5)
+  implodes into one bright ball and was rejected.
 - **Visual review** - `await __sweep()` (standard predator pass: the cursor
   enters from the left, crosses into the school, parks, leaves) and
   `await __filmstrip({ frames, intervalMs, path, click })` return one

@@ -28,6 +28,7 @@ import { GPU_TUNING, TUNING } from "../params";
  *   U[14] jitter, wanderPull, returnPull, repelForce
  *   U[15] fleeForce, regroup, containRadius, gait
  *   U[16] dirSep, shape, bite, flight   (lifelike levers; 1, 0, 0, 0 = v3 kernel)
+ *   U[17] rally, 0, 0, 0                (lifelike lever; 0 = v3 kernel)
  */
 
 /** Uniform array length in vec4s (80 floats). Shared with GpuSwarm.ts. */
@@ -530,6 +531,7 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
   let shape = U[16].y;
   let bite = U[16].z;
   let flight = U[16].w;
+  let rally = U[17].x;
   let perception2 = perception * perception;
   let cen = centroid[0].xyz;
 
@@ -926,6 +928,9 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
 
   // ---- Steering forces ----
   var acc = vec3f(0.0);
+  // Set by the rally drive below; lifts the integrate speed cap so the
+  // rush back can outrun cruise speed. Stays 0 at rally 0.
+  var rallyBoost = 0.0;
   var pairKick = vec3f(0.0);
   let maxSpeed = maxSpeedBase * spdF
     * (1.0 + energy * E_SPEED_BOOST + fearI * F_SPEED_BOOST);
@@ -1165,6 +1170,15 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
     if (hd > containRadius * 0.75) {
       acc += h * ((regroup * 3.2 * sqrt(fearI)) / hd);
     }
+    // Rally: frightened fish want the school's center, not its edge. No
+    // distance gate (fish inside the body drive too) and no arrival damping,
+    // so they overshoot through the center; the fine collision grid and
+    // crowd dim absorb the pile-up. Owner wants the regroup violent.
+    if (rally > 0.001 && hd > 0.5) {
+      let drive = regroup * 3.2 * sqrt(fearI) * rally * 1.5;
+      acc += (h / hd) * drive;
+      rallyBoost = rally * sqrt(fearI);
+    }
   }
 
   // ---- Bubble pulse: sustained radial push from the cascade epicenter ----
@@ -1204,7 +1218,9 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
   // ---- Integrate ----
   vel = (vel + (acc + pairKick) * dt) * dragF;
   let sp2 = dot(vel, vel);
-  let cap = maxSpeed * select(1.0, 0.85, mode == WANDER) + 0.4;
+  // maxSpeed also feeds the steering targets; only the hard cap is raised.
+  let capSpeed = maxSpeed * (1.0 + 0.8 * rallyBoost);
+  let cap = capSpeed * select(1.0, 0.85, mode == WANDER) + 0.4;
   if (sp2 > cap * cap) {
     vel *= cap / sqrt(sp2);
   }
