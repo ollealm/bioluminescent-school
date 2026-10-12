@@ -1,4 +1,5 @@
 import type { DevPanel } from "./DevPanel";
+import { DEFAULT_PARAMS } from "./params";
 import type { Snapshot, SwarmSystem } from "./system";
 
 /**
@@ -42,15 +43,22 @@ export function urlFeel(): string | null {
   return name && isFeel(name) ? name : null;
 }
 
+/** The feel a plain visit boots into: the one shipped on olle.work. */
+export const DEFAULT_FEEL = "olle-work";
+
 export interface FeelSwitcherOptions {
   /** How a feel's snapshot (count stripped) reaches the system. */
   apply?: (snap: Partial<Snapshot>) => void;
+  /** Apply DEFAULT_FEEL when the URL names none (the production boot). */
+  useDefault?: boolean;
 }
 
 export interface FeelSwitcher {
   /** Apply a feel by name; false if unknown. */
   select(name: string): boolean;
   readonly names: readonly string[];
+  /** The feel applied at install (from ?feel= or the default), if any. */
+  readonly applied: string | null;
   /** Unbind hotkeys and detach from the panel (call before a re-mount). */
   dispose(): void;
 }
@@ -62,7 +70,7 @@ export function installFeelSwitcher(
 ): FeelSwitcher {
   const apply = opts.apply ?? ((snap) => system.applySnapshot(snap));
 
-  const select = (name: string): boolean => {
+  const select = (name: string, o: { updateUrl?: boolean } = {}): boolean => {
     if (!isFeel(name)) return false;
     const snap = FEELS[name];
     // A feel is a temperament, not a density: the snapshot's count is
@@ -70,11 +78,13 @@ export function installFeelSwitcher(
     // the count slider, or ?count= decide how many fish there are).
     const { count: _count, ...rest } = snap;
     void _count;
-    apply(rest);
+    // Replace, not merge: keys the snapshot predates (crowdDim in
+    // site-default) must return to defaults, not keep the last feel's.
+    apply({ ...rest, params: { ...DEFAULT_PARAMS, ...rest.params } });
 
     // Already in the URL (boot apply, same key twice): no history churn.
     const query = new URLSearchParams(location.search);
-    if (query.get("feel") !== name) {
+    if (o.updateUrl !== false && query.get("feel") !== name) {
       query.set("feel", name);
       history.replaceState(history.state, "", `${location.pathname}?${query}${location.hash}`);
     }
@@ -86,11 +96,20 @@ export function installFeelSwitcher(
 
   panel.setFeels(FEEL_NAMES);
   panel.onFeelSelect = (name) => void select(name);
+  panel.onReset = () => void select(DEFAULT_FEEL, { updateUrl: false });
 
+  let applied: string | null = null;
   const requested = new URLSearchParams(location.search).get("feel");
-  if (requested) {
-    if (!select(requested)) {
-      console.warn(`[feel] unknown ?feel=${requested}; have: ${FEEL_NAMES.join(", ")}`);
+  if (requested && select(requested)) {
+    applied = requested;
+  } else {
+    // A typo'd link still gets the shipped look rather than bare defaults.
+    if (requested) console.warn(`[feel] unknown ?feel=${requested}; have: ${FEEL_NAMES.join(", ")}`);
+    if (opts.useDefault && isFeel(DEFAULT_FEEL)) {
+      // The shipped look: a plain visit gets the final feel, silently (no
+      // URL rewrite). A dev session that saved its own tweaks passes
+      // useDefault false and keeps them.
+      if (select(DEFAULT_FEEL, { updateUrl: false })) applied = DEFAULT_FEEL;
     }
   }
 
@@ -109,9 +128,11 @@ export function installFeelSwitcher(
   return {
     select,
     names: FEEL_NAMES,
+    applied,
     dispose() {
       window.removeEventListener("keydown", onKey);
       panel.onFeelSelect = null;
+      panel.onReset = undefined;
     },
   };
 }

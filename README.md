@@ -36,13 +36,37 @@ comparing full parameter sets live:
   `?feel=<name>` for sharing, and the panel's *Feel A/B* row shows which is
   active. *Save feel…* downloads the current sliders as `<name>.json`; drop
   it into `snapshots/` and it appears on reload. `site-default` is the v3
-  canonical state; `lifelike-a` is the current candidate for olle.work.
-- **Two GPU-only levers** added for the "constantly moving and collapsing in
-  on itself" brief (both default 0, so v3 snapshots are bit-identical):
-  `collapse` adds a *contract* mood to the director (the school condenses
-  toward its centroid with relaxed personal space, then releases into a
-  turn with a separation pop); `shape` makes cohesion anisotropic along the
-  school heading so a traveling shoal stretches instead of staying a ball.
+  canonical state; **`olle-work` is the shipped feel** - a plain visit
+  boots into it (a dev session with saved slider tweaks keeps those; press
+  Reset or use `?feel=olle-work` to get back).
+- **Four GPU-only levers** added for the brief (all default 0, so v3
+  snapshots are bit-identical):
+  - `collapse` adds a *contract* mood to the director: the school condenses
+    toward its centroid through cohesion alone, then releases into a turn
+    with a separation pop. Personal space never relaxes during it: that was
+    tried and crushed the condensed school into one glowing mass.
+  - `shape` makes cohesion anisotropic along the school heading so a
+    traveling shoal stretches instead of staying a ball.
+  - `bite` sharpens the danger zone's edge: the v3 zone is a smoothstep
+    sphere nearly the size of the school, which reads as a gravity well
+    displacing the school as a fluid (owner's complaint). With bite, nothing
+    happens until a fish is genuinely close, then it bolts at full strength;
+    the hole it leaves is made by bolting, fear and contagion, not by a wide
+    gentle push. Pair it with a small `mouseRadius`.
+  - `crowdDim` is the density-aware brightness budget: each sprite's opacity
+    scales by `(nRef / nLocal)^(0.8·crowdDim)` where nLocal is a smooth
+    tent-weighted fish count over the 27 fine collision cells around it and
+    nRef the count at nominal school density. Dense cores stop piling up
+    additively into one glowing spot while the resting body keeps its
+    brightness. A box count was tried first and banded along the grid
+    planes; the tent kernel is position-continuous.
+- **Visual review** - `await __sweep()` (standard predator pass: the cursor
+  enters from the left, crosses into the school, parks, leaves) and
+  `await __filmstrip({ frames, intervalMs, path, click })` return one
+  contact-sheet JPEG (data URL) of the live animation with per-frame stats:
+  `hotFrac` (pixels near white, the "smushed glowing spot" signal), the
+  largest hot blob, lit footprint and centroid. This is how the feel was
+  reviewed without watching it move.
 - **`await feel()`** in the console measures the live school for 30 s
   (no rebuild, so tweak sliders first): elongation, edge sharpness, internal
   density structure, breathing amplitude/period, velocity coherence swing,
@@ -116,12 +140,17 @@ rationale in place; user-facing sliders keep their v3 meaning throughout.
   color*. Screen sampling during full-school cascades finds zero
   near-white pixels.
 - **Neighbor sampling** — the 16-neighbor cap survives, but candidates are
-  sampled with per-particle-per-frame hash-randomized cell order and
-  in-cell offsets instead of v3's grid-cell-order bias (which would read
-  as anisotropy at 50k). Fair sampling must stay *pure*: an own-cell
+  **stratified by cell population**: a first pass counts the 27 cells, then
+  each cell is examined for a share of `sampleCandidates` (96) proportional
+  to its count, from a hash-randomized in-cell offset, in hash-rotated cell
+  order. The earlier "first cell to fill the cap wins" sweep averaged over
+  *cells* rather than *fish*, which is a periodic force with the cell period
+  - measured as a ±10% density modulation at the perception-cell pitch that
+  showed as sheets along the grid planes once crowd dim revealed the core's
+  mid-tones (now ±3%, noise). Fair sampling must stay *pure*: an own-cell
   quota was tried for close-range locality and any position-quantized bias
-  is static in space — it accreted the school into visible sheets along
-  the grid-cell planes within a minute.
+  is static in space - it accreted the school into visible sheets within a
+  minute. Both calibration scales below were re-derived for it.
 - **The fine collision grid** (`fineGridDim`/`fineCellSize`/`pairPush`) —
   anti-clumping (owner's ask). Fair sampling starves close-range
   separation (an overlapped pair-mate is one of ~800 candidates for 16
@@ -163,8 +192,8 @@ rationale in place; user-facing sliders keep their v3 meaning throughout.
   itself indefinitely — cascades stopped dying (~1 run in 3), which is
   invariant §4.3's "flickers forever" failure. Weighting each lit
   neighbor's contribution by its remaining heat starves aging carriers
-  while `transmissionScale = 2.0` restores the fresh wavefront to the
-  measured v3 growth curve. (Measured today, the v3 reference itself
+  while `transmissionScale` (1.35 under stratified sampling) restores the
+  fresh wavefront to the measured v3 growth curve. (Measured today, the v3 reference itself
   occasionally fails its own extinction probe — the mechanism exists at
   2.6k too, just rarely finds fuel.)
 - **Refractory re-derived** (`refractoryScale = 1.6`), per invariant §4.3's
@@ -183,9 +212,10 @@ rationale in place; user-facing sliders keep their v3 meaning throughout.
   0.92× the *sampled* max neighbor fear. Under pure fair sampling that
   lagged the front of a moving panic wave ~4× (the strike read as a
   foreground-only flinch, needing a ×2.5 rate boost); the own-cell quota
-  supplies front-hugging samples like v3's cell-order scan did, so the
-  compensation is back to 1.0 — the quota carries it. Ceiling semantics
-  untouched throughout.
+  supplies front-hugging samples like v3's cell-order scan did; stratified
+  sampling now does the same without the quota's bias, so the compensation
+  is 1.0 (at 2.0 a parked cursor panicked 89% of the school). Ceiling
+  semantics untouched throughout.
 - **Absolute counts → fractions** — wander group size is read as "fish per
   2,600" and recruited by probability; scatter's 12 ignition seeds became
   `scatterIgniteFrac`.
@@ -208,6 +238,13 @@ rationale in place; user-facing sliders keep their v3 meaning throughout.
 | moods seen in 120 s | all 5 | all 5 | all 5 |
 | mean-speed swing | 2.6× | 3.4× | ≥ 2× |
 | peak hot-glow (frac) | 0.037 | 0.040 | small |
+
+Re-measured 2026-10-12 at 25,000 with the shipped `olle-work` feel after
+stratified sampling and the re-derived scales (30 s mood run): cascade
+.022 / .095 / .209 / .275 then extinct; outburst 0.97; inburst 0.91;
+fountain −0.27 (bar < −0.2, back from ~0 under the old fear-spread
+compensation); vacancy 0 / 67; panic reach 0.39; mean-speed swing 3.1×;
+peak hot-glow 0.018; 1.75 ms per step.
 
 Perf on Apple silicon (Metal 3, Chrome): **4.1 ms sim / 5.3 ms sim+render
 per step at 50,000** — the CPU reference spends 5.3 ms on 2,600. 100,000

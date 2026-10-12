@@ -14,7 +14,21 @@
  *   b      size (density-compensated), opacity (compensated), flashBright, twinkle
  *   c      stretch, motionGlow, style, tonemapKnee
  *   flash  flash color rgb, camera z
+ *   crowd  nRef (expected 27-fine-cell count at nominal density), crowdDim, 0, 0
  */
+import { GPU_TUNING } from "../params";
+
+// Fine collision grid geometry, duplicated from WGSL_COMMON in wgsl-sim.ts
+// (both derive from GPU_TUNING, so the sprite shader indexes the same cells).
+const FINE_GRID = /* wgsl */ `
+const FINE_D: i32 = ${GPU_TUNING.fineGridDim};
+const FINE_INV: f32 = ${1 / GPU_TUNING.fineCellSize};
+
+fn fineCoord(v: f32) -> i32 {
+  return clamp(i32(floor(v * FINE_INV)) + (FINE_D / 2), 0, FINE_D - 1);
+}
+`;
+
 export const WGSL_SPRITES = /* wgsl */ `
 struct RU {
   vp: mat4x4f,
@@ -22,7 +36,9 @@ struct RU {
   b: vec4f,
   c: vec4f,
   flash: vec4f,
+  crowd: vec4f,
 }
+${FINE_GRID}
 
 struct Dyn {
   pe: vec4f,
@@ -42,6 +58,9 @@ struct Stat {
 @group(0) @binding(1) var<storage, read> dyn: array<Dyn>;
 @group(0) @binding(2) var<storage, read> selfB: array<SelfState>;
 @group(0) @binding(3) var<storage, read> stat: array<Stat>;
+// The sim's gridData: fine-cell starts at offset 0, so a cell's population
+// is gridData[cell + 1] - gridData[cell].
+@group(0) @binding(4) var<storage, read> gridData: array<u32>;
 
 struct VOut {
   @builtin(position) clip: vec4f,
@@ -49,6 +68,9 @@ struct VOut {
   @location(1) misc: vec4f, // energy, tw, glow, seed
   @location(2) dirStretch: vec4f, // dir.xy, stretch, unused
   @location(3) uvc: vec2f,
+  // Flat so a crowd fade of exactly 1.0 stays exactly 1.0 (no
+  // interpolation round-off): crowdDim 0 must be bit-identical.
+  @location(4) @interpolate(flat) crowdFade: f32,
 }
 
 @vertex
@@ -91,12 +113,69 @@ fn vsSprite(
     clip.zw,
   );
 
+  // Crowd dim: perceived brightness is ~n * opacity, so a core 4x denser
+  // than the nominal school would read 4x brighter and blow out into one
+  // glowing spot. Fading by (nRef / nLocal)^(0.8 * crowdDim) makes it read
+  // ~1.3x at full dim; sparse fish are never boosted. Uniform branch: no
+  // grid reads and a factor of exactly 1 at crowdDim 0.
+  //
+  // nLocal must be position-continuous. A plain box sum over the 27 cells
+  // around the fish's own cell jumps whenever the fish crosses a cell face
+  // (a whole slab of 9 cells swaps in/out), and that step renders as
+  // brightness banding along the grid planes in dense cores — the same
+  // position-quantized signature as the reverted own-cell quota. Instead,
+  // each cell's count is weighted by a separable tent of its center's
+  // offset from the fish, in cell units: d = (o + 0.5) - frac per axis,
+  // in [-1.5, 1.5], w = prod max(0, 1 - |d| / 1.5). At a face crossing the
+  // slab leaving the stencil and the one entering it both sit at |d| = 1.5
+  // (w = 0), so the weighted mean is continuous. Normalizing by sum(w) and
+  // scaling by 27 keeps the old meaning (expected fish in 27 cells), so the
+  // host's nRef stays valid. Off-grid cells get w = 0 (excluded from both
+  // sums); sum(w) >= (1 - 0.5/1.5)^3 from the own cell alone. Cost per
+  // vertex is the same 27 cells x 2 reads as before plus a few ALU ops.
+  var crowdFade = 1.0;
+  let crowdDim = R.crowd.y;
+  if (crowdDim > 0.0) {
+    let fx = fineCoord(pos.x);
+    let fy = fineCoord(pos.y);
+    let fz = fineCoord(pos.z);
+    // Fractional position inside the own cell, [0, 1] (clamped so a fish
+    // outside the grid, pinned to an edge cell by fineCoord, stays sane).
+    let gpos = pos * FINE_INV + f32(FINE_D / 2);
+    let fr = clamp(gpos - vec3f(f32(fx), f32(fy), f32(fz)), vec3f(0.0), vec3f(1.0));
+    var wSum = 0.0;
+    var nSum = 0.0;
+    for (var oz = -1; oz <= 1; oz++) {
+      for (var oy = -1; oy <= 1; oy++) {
+        for (var ox = -1; ox <= 1; ox++) {
+          let gx = fx + ox;
+          let gy = fy + oy;
+          let gz = fz + oz;
+          if (gx < 0 || gx >= FINE_D || gy < 0 || gy >= FINE_D
+              || gz < 0 || gz >= FINE_D) {
+            continue;
+          }
+          let off = vec3f(f32(ox), f32(oy), f32(oz)) + 0.5 - fr;
+          let t = max(vec3f(0.0), vec3f(1.0) - abs(off) / 1.5);
+          let w = t.x * t.y * t.z;
+          // fineCellOf's indexing, per neighbor cell.
+          let c = u32(gx) + u32(gy) * u32(FINE_D) + u32(gz) * u32(FINE_D * FINE_D);
+          nSum += w * f32(gridData[c + 1u] - gridData[c]);
+          wSum += w;
+        }
+      }
+    }
+    let nLocal = nSum / max(wSum, 1e-6) * 27.0;
+    crowdFade = pow(clamp(R.crowd.x / max(nLocal, 1.0), 0.0, 1.0), 0.8 * crowdDim);
+  }
+
   var out: VOut;
   out.clip = clip;
   out.color = st.colorSize.rgb;
   out.misc = vec4f(energy, tw, glow, seed);
   out.dirStretch = vec4f(dir, stretch, 0.0);
   out.uvc = corner * 0.5;
+  out.crowdFade = crowdFade;
   return out;
 }
 
@@ -147,6 +226,7 @@ fn fsSprite(in: VOut) -> @location(0) vec4f {
   col *= 1.0 + e * R.b.z + g * 0.8 + core * 0.55;
 
   a *= R.b.y * (0.35 + 0.65 * in.misc.y) * (1.0 + e * 0.5 + g * 0.3);
+  a *= in.crowdFade;
   return vec4f(col * a, a);
 }
 `;
@@ -158,6 +238,7 @@ struct RU {
   b: vec4f,
   c: vec4f,
   flash: vec4f,
+  crowd: vec4f,
 }
 
 @group(0) @binding(0) var<uniform> R: RU;

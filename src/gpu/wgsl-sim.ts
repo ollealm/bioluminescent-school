@@ -27,7 +27,7 @@ import { GPU_TUNING, TUNING } from "../params";
  *   U[13] kx, ky, kz, swirl
  *   U[14] jitter, wanderPull, returnPull, repelForce
  *   U[15] fleeForce, regroup, containRadius, gait
- *   U[16] dirSep, shape, 0, 0           (lifelike levers; 1, 0 = v3 kernel)
+ *   U[16] dirSep, shape, bite, 0        (lifelike levers; 1, 0, 0 = v3 kernel)
  */
 
 /** Uniform array length in vec4s (80 floats). Shared with GpuSwarm.ts. */
@@ -50,6 +50,7 @@ const D: i32 = ${D};
 const D2: u32 = ${D * D}u;
 const CELLS: u32 = ${D * D * D}u;
 const MAX_NEIGHBORS: u32 = ${TUNING.maxNeighbors}u;
+const SAMPLE_CAND: u32 = ${GPU_TUNING.sampleCandidates}u;
 const MAX_FORCE: f32 = ${TUNING.maxForce};
 const CONTAGIOUS_ABOVE: f32 = ${TUNING.contagiousAbove};
 const FLASH_ENDS_BELOW: f32 = ${TUNING.flashEndsBelow};
@@ -513,6 +514,7 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
   let gaitP = U[15].w;
   let dirSep = U[16].x;
   let shape = U[16].y;
+  let bite = U[16].z;
   let perception2 = perception * perception;
   let cen = centroid[0].xyz;
 
@@ -671,9 +673,11 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
   }
 
   // ---- Neighbor pass: boids accumulators + contagion pressure ----
-  // Fair sampling under the neighbor cap: cell order and in-cell start are
+  // Fair sampling under the neighbor cap: candidates are stratified across
+  // the 27 cells by population, cell order and in-cell start are
   // hash-rotated per particle per frame, so the accepted subset is an
-  // unbiased sample and anisotropy averages out (HANDOFF §5).
+  // unbiased sample of the fish around us and anisotropy averages out
+  // (HANDOFF §5).
   var sep = vec3f(0.0);
   var hardPush = vec3f(0.0);
   var coh = vec3f(0.0);
@@ -689,15 +693,25 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
   let cz = cellCoord(pos.z, invCell);
   let rot = pcg(i ^ pcg(u32(U[0].z) * 2654435761u));
 
-  // Hash-rotated fair sweep over the 27-cell neighborhood. Deliberately NO
-  // own-cell priority: any position-quantized sampling bias is static in
-  // space and compounds — an earlier own-cell quota accreted the school
-  // into visible sheets along the grid planes within a minute. Close-range
-  // personal space is handled exhaustively by the fine collision grid
-  // below, so flocking keeps the reference's clean 16-accept semantics.
+  // Stratified fair sweep over the 27-cell neighborhood. The first sweep
+  // accepted the first 16 in-range fish in a hash-rotated cell order — but
+  // the first cell with in-range fish usually filled all 16 slots, so the
+  // expected sample was an average over *cells* (each start equally
+  // likely), not over fish. A fish's cohesion/alignment target then
+  // depended on where it sat inside its cell: a static force field with the
+  // grid period (measured ±10% density modulation, sheets along the grid
+  // planes). So each cell gets a candidate quota proportional to its
+  // population (dithered by a per-cell hash so the expectation is exact):
+  // every fish in the block is equally likely to be examined, and the
+  // in-range ones are a uniform sample of the perception sphere.
+  // Deliberately NO own-cell priority: any position-quantized sampling bias
+  // is static in space and compounds — an earlier own-cell quota accreted
+  // the school into visible sheets along the grid planes within a minute.
+  // Close-range personal space is handled exhaustively by the fine
+  // collision grid below, so flocking keeps the reference's 16-accept cap.
+  var total = 0u;
   for (var oi = 0u; oi < 27u; oi++) {
-    if (found >= MAX_NEIGHBORS) { break; }
-    let o = OFFS[(oi + rot) % 27u];
+    let o = OFFS[oi];
     let gx = cx + o.x;
     let gy = cy + o.y;
     let gz = cz + o.z;
@@ -705,45 +719,64 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
       continue;
     }
     let cell = u32(gx) + u32(gy) * u32(D) + u32(gz) * D2;
-    let start = gridData[CS_OFF + cell];
-    let cnt = gridData[CS_OFF + cell + 1u] - start;
-    if (cnt == 0u) { continue; }
-    let off = pcg(rot ^ cell) % cnt;
-    for (var e = 0u; e < cnt; e++) {
+    total += gridData[CS_OFF + cell + 1u] - gridData[CS_OFF + cell];
+  }
+  if (total > 0u) {
+    let candScale = f32(SAMPLE_CAND) / f32(total);
+    for (var oi = 0u; oi < 27u; oi++) {
       if (found >= MAX_NEIGHBORS) { break; }
-      let j = gridData[CE_OFF + start + ((off + e) % cnt)];
-      if (j == i) { continue; }
-      let jd = dynIn[j];
-      let d3 = jd.pe.xyz - pos;
-      let d2 = dot(d3, d3);
-      if (d2 > perception2) { continue; }
-
-      let dist = max(sqrt(d2), 1e-4);
-      if (dist < sepR) {
-        let w = 1.0 - dist / sepR;
-        sep -= d3 * (w * w / dist);
+      let o = OFFS[(oi + rot) % 27u];
+      let gx = cx + o.x;
+      let gy = cy + o.y;
+      let gz = cz + o.z;
+      if (gx < 0 || gx >= D || gy < 0 || gy >= D || gz < 0 || gz >= D) {
+        continue;
       }
-      coh += jd.pe.xyz;
-      aln += jd.vf.xyz;
-      found++;
+      let cell = u32(gx) + u32(gy) * u32(D) + u32(gz) * D2;
+      let start = gridData[CS_OFF + cell];
+      let cnt = gridData[CS_OFF + cell + 1u] - start;
+      if (cnt == 0u) { continue; }
+      let h = pcg(rot ^ cell);
+      let off = h % cnt;
+      // Top 24 bits only: an f32 of the full u32 can round up to exactly 1.0.
+      let dither = f32(pcg(h) >> 8u) * (1.0 / 16777216.0);
+      let quota = min(cnt, u32(floor(f32(cnt) * candScale + dither)));
+      for (var e = 0u; e < quota; e++) {
+        if (found >= MAX_NEIGHBORS) { break; }
+        let j = gridData[CE_OFF + start + ((off + e) % cnt)];
+        if (j == i) { continue; }
+        let jd = dynIn[j];
+        let d3 = jd.pe.xyz - pos;
+        let d2 = dot(d3, d3);
+        if (d2 > perception2) { continue; }
 
-      if (jd.pe.w > CONTAGIOUS_ABOVE) {
-        // Contagion is weighted by the source's remaining heat (v3 counted
-        // every lit neighbor at full strength). At 20× density a lit fish
-        // is a "spark carrier": the radial kick flies it a full perception
-        // radius while still contagious, and with fuel everywhere the burn
-        // never starves (HANDOFF §5). Fresh flashes ignite at full
-        // strength; aging carriers fade — the click wavefront survives,
-        // the wandering smolder does not.
-        let srcHeat = (jd.pe.w - CONTAGIOUS_ABOVE) / (1.0 - CONTAGIOUS_ABOVE);
-        let w = (1.0 - dist / perception) * srcHeat;
-        contagion += w;
-        if (w > bestW) {
-          bestW = w;
-          bestJ = i32(j);
+        let dist = max(sqrt(d2), 1e-4);
+        if (dist < sepR) {
+          let w = 1.0 - dist / sepR;
+          sep -= d3 * (w * w / dist);
         }
+        coh += jd.pe.xyz;
+        aln += jd.vf.xyz;
+        found++;
+
+        if (jd.pe.w > CONTAGIOUS_ABOVE) {
+          // Contagion is weighted by the source's remaining heat (v3 counted
+          // every lit neighbor at full strength). At 20× density a lit fish
+          // is a "spark carrier": the radial kick flies it a full perception
+          // radius while still contagious, and with fuel everywhere the burn
+          // never starves (HANDOFF §5). Fresh flashes ignite at full
+          // strength; aging carriers fade — the click wavefront survives,
+          // the wandering smolder does not.
+          let srcHeat = (jd.pe.w - CONTAGIOUS_ABOVE) / (1.0 - CONTAGIOUS_ABOVE);
+          let w = (1.0 - dist / perception) * srcHeat;
+          contagion += w;
+          if (w > bestW) {
+            bestW = w;
+            bestJ = i32(j);
+          }
+        }
+        maxFear = max(maxFear, jd.vf.w);
       }
-      maxFear = max(maxFear, jd.vf.w);
     }
   }
 
@@ -838,10 +871,13 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
   // Smoothstep falloff inside the danger zone — used by the escape steering
   // below and by the crowd-pressure compensation in separation (§5: at 50k
   // the dense wall around the cleared column would otherwise shove fresh
-  // fish inward through pure separation pressure).
+  // fish inward through pure separation pressure). Bite moves the ramp's
+  // inner edge out so the outer school is untouched and close fish get the
+  // full bolt: a predator, not a gravity well. smoothstep(0, 1, u) is
+  // u*u*(3-2u), so bite 0 is the reference falloff exactly.
   var predFall = 0.0;
   if (pointerOn && uNorm < 1.0) {
-    predFall = 1.0 - uNorm * uNorm * (3.0 - 2.0 * uNorm);
+    predFall = 1.0 - smoothstep(bite, 1.0, uNorm);
   }
   // Lasting fear keeps the reference sphere's semantics: the wedge's long
   // forward reach makes fish *evade* an approaching hunter early, but only
@@ -851,7 +887,7 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
   var fearFall = 0.0;
   if (pointerOn && pdist < mouseR) {
     let uS = pdist / mouseR;
-    fearFall = 1.0 - uS * uS * (3.0 - 2.0 * uS);
+    fearFall = 1.0 - smoothstep(bite, 1.0, uS);
   }
 
   // After a strike, far-flung survivors commit to returning.
@@ -870,8 +906,8 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
     * (1.0 + energy * E_SPEED_BOOST + fearI * F_SPEED_BOOST);
 
   if (found > 0u) {
-    // The director's separation gain: < 1 while the school contracts, a
-    // brief > 1 pop on the release. Exactly 1.0 at collapse 0.
+    // The director's separation gain: 1 in every mood except the brief
+    // 1.25 pop on the release after a contraction. Exactly 1.0 at collapse 0.
     let sepW = separationW * dirSep;
     // During an inburst, lit particles let the crowd condense — when the
     // flash fades, separation snaps back and the bubble pops.
@@ -894,7 +930,12 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
     }
 
     // Collision pushout obeys the same relaxes (inbursts must condense)
-    // and vanishes with the user's separation slider. Fear damps it and
+    // and vanishes with the user's separation slider. It reads the slider,
+    // not sepW: dirSep is a director gain that is 1 in every mood except
+    // the release pop after a contraction (1.25), and that pop must not
+    // shove harder. Contraction itself never relaxes separation; hard
+    // personal space must hold or the condensing school smushes into one
+    // glowing spot. Fear damps it and
     // the threat's whole neighborhood disables it: threatened schools
     // pack tighter, collision noise would decohere the fountain's parting
     // velocity field, and shoves at the cleared column's compressed wall
@@ -902,7 +943,7 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
     // than through it: dodging a neighbor is not agitation, so it must
     // not trip the shear-glow knee.
     pairKick = hardPush
-      * (min(1.0, sepW) * relaxMul * (1.0 - fearI)
+      * (min(1.0, separationW) * relaxMul * (1.0 - fearI)
         * select(1.0, 0.0, threatNear));
 
     if (mode == FLOCK) {

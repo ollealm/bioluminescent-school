@@ -91,6 +91,7 @@ const GROUPS: Group[] = [
     open: true,
     sliders: [
       { key: "mouseRadius", label: "Radius", min: 1, max: 12, step: 0.1, impact: 3, hint: "Size of the danger zone around the cursor" },
+      { key: "bite", label: "Bite", min: 0, max: 0.9, step: 0.01, impact: 3, hint: "How crisp the danger zone's edge is - 0 = soft gravity-like falloff, high = nothing until close, then full bolt" },
       { key: "repelForce", label: "Repel force", min: 0, max: 90, step: 1, impact: 3, hint: "Escape steering strength inside the danger zone" },
       { key: "regroup", label: "Regroup drive", min: 0, max: 4, step: 0.05, impact: 3, hint: "Post-threat urge to rush back to the school" },
       { key: "fleeForce", label: "Flee force", min: 0, max: 80, step: 1, impact: 2, hint: "Extra push while frightened and the threat is still close" },
@@ -123,6 +124,7 @@ const GROUPS: Group[] = [
       { key: "opacity", label: "Opacity", min: 0.1, max: 1, step: 0.01, impact: 3, hint: "Overall brightness / translucency" },
       { key: "motionGlow", label: "Motion glow", min: 0, max: 2, step: 0.05, impact: 2, hint: "Shear-triggered light — agitated particles glow" },
       { key: "stretch", label: "Stretch", min: 0, max: 3, step: 0.05, impact: 2, hint: "Fast particles render as streaks along their motion" },
+      { key: "crowdDim", label: "Crowd dim", min: 0, max: 1, step: 0.01, impact: 2, hint: "Dim fish in dense cores so pile-ups don't blow out into one glowing spot" },
       { key: "twinkle", label: "Twinkle", min: 0, max: 1, step: 0.01, impact: 1, hint: "Slow individual brightness oscillation" },
     ],
   },
@@ -221,6 +223,9 @@ const CSS = `
 }
 `;
 
+/** localStorage key for the auto-saved slider state (shared by both backends). */
+export const PANEL_STORAGE_KEY = "olle-biolume-gpu-v1";
+
 export interface DevPanelOptions {
   storageKey?: string;
   startOpen?: boolean;
@@ -255,10 +260,12 @@ export class DevPanel {
   private feelName: string | null = null;
   /** Set by installFeelSwitcher (src/feel.ts); Feel A/B buttons route through it. */
   onFeelSelect: ((name: string) => void) | null = null;
+  /** Set by installFeelSwitcher: Reset lands on the shipped feel, not bare v3 defaults. */
+  onReset?: () => void;
 
   constructor(system: SwarmSystem, options: DevPanelOptions = {}) {
     this.system = system;
-    this.storageKey = options.storageKey ?? "olle-biolume-gpu-v1";
+    this.storageKey = options.storageKey ?? PANEL_STORAGE_KEY;
     this.opts = {
       countMin: options.countMin ?? 500,
       countMax: options.countMax ?? 6000,
@@ -520,6 +527,8 @@ export class DevPanel {
           history.replaceState(history.state, "", `${location.pathname}${qs ? "?" + qs : ""}${location.hash}`);
         }
         this.refresh();
+        // Back to the shipped feel; the callback re-highlights it.
+        this.onReset?.();
       }, "Restore all settings to defaults and clear saved tuning"),
     );
     actions.appendChild(
@@ -689,7 +698,7 @@ export class DevPanel {
 }
 
 /** Params only the GPU kernel implements (added after the v3 port). */
-const GPU_ONLY_KEYS = new Set<string>(["collapse", "shape"]);
+const GPU_ONLY_KEYS = new Set<string>(["collapse", "shape", "bite", "crowdDim"]);
 
 function el(tag: string, cls: string, text?: string): HTMLElement {
   const node = document.createElement(tag);

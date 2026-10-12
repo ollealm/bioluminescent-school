@@ -784,17 +784,20 @@ export class GpuSwarm implements SwarmSystem {
         break;
       case M_CONTRACT: {
         // The school draws in on itself: cohesion swells, the shared will
-        // slackens, personal space gives a little, and a slight swirl keeps
-        // the condensing body alive. Still a gain - arrival damping
-        // (HANDOFF §4.1) bounds the squeeze, so it never becomes a ball.
+        // slackens, and a slight swirl keeps the condensing body alive.
+        // Personal space does NOT give: relaxing soft separation was tried
+        // and let the fine collision grid dominate, so the condensed school
+        // crushed into one glowing mass (the owner's "smushed" complaint)
+        // and settled onto the grid lattice. Cohesion alone condenses; the
+        // arrival damping (HANDOFF §4.1) bounds the squeeze.
         const c = P.collapse;
         this.moodTimer = (2.2 + Math.random() * 1.8) / tempo;
         this.tgtAlign = 0.7;
-        this.tgtCoh = 1.0 + 1.1 * c;
+        this.tgtCoh = 1.0 + 0.9 * c;
         this.tgtMill = 0.25;
         this.tgtDrive = 0.25;
         this.tgtSpeed = 0.35;
-        this.tgtSep = 1 - 0.35 * Math.min(1, c);
+        this.tgtSep = 1;
         break;
       }
     }
@@ -1066,7 +1069,8 @@ export class GpuSwarm implements SwarmSystem {
     U[63] = P.gait;
     U[64] = this.dirSep;
     U[65] = P.shape;
-    U[66] = 0;
+    // Clamped below 1: WGSL smoothstep is undefined when its edges meet.
+    U[66] = Math.min(0.9, Math.max(0, P.bite ?? 0));
     U[67] = 0;
 
     // ---- Pack events ----
@@ -1171,6 +1175,10 @@ export class GpuSwarm implements SwarmSystem {
   }
   staticsBuffer(): GPUBuffer {
     return this.statB;
+  }
+  /** Grid buffer; fine-cell starts sit at offset 0 (crowd dim reads them). */
+  gridDataBuffer(): GPUBuffer {
+    return this.gridData;
   }
   /** Simulation clock — drives twinkle/blink phases in the renderer. */
   get simTime(): number {

@@ -91,7 +91,7 @@ export const GPU_TUNING = {
    * the measured CPU reference under fair sampling. It's the calibration
    * dial — retune it first if the sampling scheme ever changes.
    */
-  transmissionScale: 1.7,
+  transmissionScale: 1.35,
   /**
    * Refractory re-derivation at 50k (invariant §4.3: refractory must exceed
    * the cascade's crossing time, "re-derive this at 50k"). The wave crosses
@@ -127,8 +127,14 @@ export const GPU_TUNING = {
    * Do NOT trade this for locality-biased sampling: an own-cell quota was
    * tried and any position-quantized bias is static in space — it accreted
    * the school into visible sheets along the grid-cell planes.
+   *
+   * Back to 1.0 since stratified sampling (sampleCandidates): the sampled
+   * max-fear now hugs the front like v3's full scan, and at 2.0 a parked
+   * cursor panicked 89% of the school (reference ≈ 0.22, bar ≳ 0.2) and the
+   * spread-feared crowd swamped the fountain signature (dot −0.08).
+   * Measured at 1.0: panic 0.26–0.39, fountain −0.17…−0.41.
    */
-  fearSpreadScale: 2.0,
+  fearSpreadScale: 1.0,
   /**
    * Collision pushout — the anti-clump force, driven by the fine collision
    * grid below. Fair sampling starves close-range separation at 50k (an
@@ -190,6 +196,28 @@ export const GPU_TUNING = {
    * from apexWidth×mouseRadius at the cursor to 1×mouseRadius at the tip. */
   strikeReach: 2.2,
   strikeApexWidth: 0.35,
+  /**
+   * Neighbor candidates examined per fish per frame, stratified across the
+   * 27 perception cells in proportion to each cell's population; accepted
+   * neighbors still cap at TUNING.maxNeighbors. The first GPU sweep took the
+   * first 16 in-range fish in a hash-rotated cell order — but the first cell
+   * with in-range fish usually filled all 16 slots, so the sample averaged
+   * over *cells*, not fish, and a fish's cohesion target depended on where
+   * it sat inside its cell: a static force field with the grid period
+   * (measured ±10% density modulation, visible as sheets along the grid
+   * planes once the core's mid-tones show). Population-proportional quotas
+   * make every fish in the block equally likely to be examined.
+   *
+   * Sized to the reference's neighbor count: cells have edge = perception,
+   * so only 4π/3 ÷ 27 ≈ 15.5% of a uniformly dense 27-cell block lies inside
+   * the perception sphere, and 96 candidates accept ~15 in the core (fewer
+   * at the fringe, all of them where the block holds < 96 fish). When the
+   * cap binds it trims only a few accepts off the tail of the cell order —
+   * a second-order echo of the old bias. Cost is about what the old sweep
+   * spent reaching 16 accepts. Lower it and contagion (a sum over accepted
+   * neighbors) and the sampled max-fear weaken proportionally.
+   */
+  sampleCandidates: 96,
   /** Compute workgroup size for the per-particle kernels. */
   workgroupSize: 64,
   /** Max host→GPU events applied per frame (burst/startle/vanguard/...). */
@@ -330,6 +358,13 @@ export interface SwarmParams {
 
   // --- Pointer (predator) ---
   mouseRadius: number;
+  /**
+   * GPU-only. Crispness of the danger zone's edge: the escape and fear
+   * falloffs ramp over [bite, 1] of the radius instead of [0, 1]. 0 = the
+   * reference's soft gravity-like push; high = nothing until a fish is
+   * close, then a full-strength bolt (a predator, not a well).
+   */
+  bite: number;
   repelForce: number;
   splash: number;
   /** How hard frightened particles keep swimming away from the cursor. */
@@ -362,6 +397,13 @@ export interface SwarmParams {
   motionGlow: number;
   /** Velocity stretching: fast particles render as streaks, not dots. */
   stretch: number;
+  /**
+   * Crowd dim (GPU only, 0..1): fish in cores denser than the nominal
+   * school fade by (nominal / local)^(0.8 * crowdDim), so additive pile-ups
+   * read as a denser school rather than one blown-out glowing spot. 0 = off
+   * (bit-identical to before).
+   */
+  crowdDim: number;
 }
 
 export const DEFAULT_PARAMS: SwarmParams = {
@@ -396,6 +438,7 @@ export const DEFAULT_PARAMS: SwarmParams = {
   returnPull: 1.6,
 
   mouseRadius: 6.5,
+  bite: 0,
   repelForce: 38,
   splash: 1.0,
   fleeForce: 30,
@@ -416,4 +459,5 @@ export const DEFAULT_PARAMS: SwarmParams = {
   twinkle: 0.55,
   motionGlow: 0.9,
   stretch: 1.3,
+  crowdDim: 0,
 };

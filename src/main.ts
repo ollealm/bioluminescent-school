@@ -1,5 +1,6 @@
-import { DevPanel } from "./DevPanel";
-import { installFeelSwitcher, urlFeel, type FeelSwitcher } from "./feel";
+import { DevPanel, PANEL_STORAGE_KEY } from "./DevPanel";
+import { installFeelSwitcher, type FeelSwitcher } from "./feel";
+import type { FilmstripOptions } from "./review";
 import type { Snapshot, SwarmSystem } from "./system";
 
 /**
@@ -152,14 +153,23 @@ async function mountBackend(
     backendLabel: label,
   });
   // Feel A/B (src/feel.ts) applies any ?feel= selection itself.
+  // A plain visit boots into the shipped feel; a dev session that saved
+  // slider tweaks (the panel's localStorage) keeps those instead.
+  let hasSavedTweaks = false;
+  try {
+    hasSavedTweaks = !!localStorage.getItem(PANEL_STORAGE_KEY);
+  } catch {
+    /* storage blocked: treat as a fresh visit */
+  }
   const feel = installFeelSwitcher(system, panel, {
     apply: (snap) => system.applySnapshot(snap),
+    useDefault: !hasSavedTweaks && !carry,
   });
   // A ?feel= snapshot replaces every param, the slowdown included: re-apply
   // it on top so reduced motion still wins. Only then: without a feel the
   // panel's localStorage restore may hold a saved reduction already, and a
   // second pass would compound it.
-  if (reduceMotion && urlFeel()) {
+  if (reduceMotion && feel.applied) {
     applyReducedMotion();
     panel.refresh();
   }
@@ -422,6 +432,13 @@ Object.assign(window as object, {
       pauseDepth--;
     }
   },
+  // Filmstrip review (src/review.ts): N frames of the *running* loop in one
+  // JPEG plus glow stats, optionally with a scripted pointer. `__sweep()` is
+  // the standard predator pass.
+  __filmstrip: async (opts?: FilmstripOptions) =>
+    (await import("./review")).runFilmstrip(opts),
+  __sweep: async (opts?: FilmstripOptions) =>
+    (await import("./review")).runSweep(opts),
 });
 
 mountBackend(true)

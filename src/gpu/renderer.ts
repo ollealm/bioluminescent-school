@@ -4,7 +4,7 @@ import { WGSL_SPRITES, WGSL_TONEMAP } from "./wgsl-render";
 
 /**
  * Renders the swarm straight out of the sim's storage buffers — zero
- * per-frame CPU↔GPU traffic beyond one 128-byte uniform write.
+ * per-frame CPU↔GPU traffic beyond one 144-byte uniform write.
  *
  * Two passes: instanced-quad sprites accumulate additively into an HDR
  * rgba16float target (the reference's exact sprite math), then a
@@ -21,7 +21,7 @@ export class GpuRenderer {
   private spritePipeline!: GPURenderPipeline;
   private tonemapPipeline!: GPURenderPipeline;
   private uniformsB: GPUBuffer;
-  private uniforms = new Float32Array(32);
+  private uniforms = new Float32Array(36);
 
   private hdr: GPUTexture | null = null;
   private hdrView!: GPUTextureView;
@@ -151,6 +151,8 @@ export class GpuRenderer {
           { binding: 1, resource: { buffer: dyn } },
           { binding: 2, resource: { buffer: this.system.selfBuffer() } },
           { binding: 3, resource: { buffer: this.system.staticsBuffer() } },
+          // Re-created on rebuild like the others; the generation check covers it.
+          { binding: 4, resource: { buffer: this.system.gridDataBuffer() } },
         ],
       });
     this.spriteGroups = [make(a), make(b)];
@@ -190,6 +192,12 @@ export class GpuRenderer {
     R[29] = ((v >> 8) & 255) / 255;
     R[30] = (v & 255) / 255;
     R[31] = sys.camera.z;
+    // Crowd dim reference: the fine-grid 27-cell count a fish sees at the
+    // nominal school density (count spread over a sphere of 0.8 x tank).
+    const schoolR = 0.8 * P.containRadius;
+    const schoolVol = (4 / 3) * Math.PI * schoolR ** 3;
+    R[32] = (sys.getCount() / schoolVol) * 27 * GPU_TUNING.fineCellSize ** 3;
+    R[33] = P.crowdDim ?? 0;
     this.device.queue.writeBuffer(this.uniformsB, 0, R);
 
     const enc = this.device.createCommandEncoder({ label: "render" });
