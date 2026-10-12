@@ -148,6 +148,12 @@ export class GpuSwarm implements SwarmSystem {
 
   // Host mirrors for statics so palette switches don't regenerate sizes.
   private staticsHost!: Float32Array;
+  /** Accent override ("#rrggbb"); null = the palette's own accent. */
+  private _accent: string | null = null;
+  /** accentShare the colors were last generated with (update() polls it). */
+  private lastAccentShare = NaN;
+  /** Per-spawn seed so a recolor reuses each fish's draws. */
+  private colorSeed = 0;
 
   private uniforms = new Float32Array(U_VEC4S * 4);
   private eventData = new ArrayBuffer(MAX_EVENTS * EVENT_STRIDE * 4);
@@ -279,10 +285,24 @@ export class GpuSwarm implements SwarmSystem {
   setPalette(name: PaletteName): void {
     if (!PALETTES[name]) return;
     this.paletteName = name;
-    if (this.staticsHost) {
-      this.regenerateColors();
-      this.device.queue.writeBuffer(this.statB, 0, this.staticsHost);
-    }
+    this.recolor();
+  }
+
+  /** The accent override, or null while the palette's own accent shows. */
+  get accentColor(): string | null {
+    return this._accent;
+  }
+
+  /**
+   * Override the palette's accent color ("#rrggbb"); null restores the
+   * palette's own. Malformed input is ignored rather than clearing.
+   */
+  setAccent(hex: string | null): void {
+    if (hex !== null && !/^#[0-9a-f]{6}$/i.test(hex)) return;
+    const next = hex === null ? null : hex.toLowerCase();
+    if (next === this._accent) return;
+    this._accent = next;
+    this.recolor();
   }
 
   setStyle(name: StyleName): void {
@@ -298,6 +318,8 @@ export class GpuSwarm implements SwarmSystem {
       style: this.styleName,
       count: this.count,
       params: { ...this.params },
+      // Only when set: a snapshot without one follows the palette.
+      ...(this._accent ? { accent: this._accent } : {}),
     };
   }
 
@@ -313,6 +335,7 @@ export class GpuSwarm implements SwarmSystem {
         if (k in DEFAULT_PARAMS && typeof v === "number") params[k] = v;
       }
     }
+    if (s.accent !== undefined) this.setAccent(s.accent);
     if (s.palette) this.setPalette(s.palette);
     if (s.style) this.setStyle(s.style);
     if (s.count && s.count !== this.count) this.rebuild(s.count);
@@ -521,6 +544,7 @@ export class GpuSwarm implements SwarmSystem {
       this.staticsHost[st + 5] = 0.7 + Math.random() * 0.6; // social
       this.staticsHost[st + 6] = Math.random(); // seed
     }
+    this.colorSeed = (Math.random() * 2 ** 32) >>> 0;
     this.regenerateColors();
 
     const q = this.device.queue;
@@ -531,17 +555,26 @@ export class GpuSwarm implements SwarmSystem {
     q.writeBuffer(this.centroidB, 0, new Float32Array(4 * (2 + 2 * REDUCE_WGS)));
   }
 
-  /** Port of applyPaletteColors — writes rgb lanes of the statics mirror. */
+  /**
+   * Port of applyPaletteColors: writes rgb lanes of the statics mirror.
+   * Every fish takes the same five draws from the spawn's seed whichever
+   * branch it lands in, so dragging the share flips only the fish crossing
+   * it and a new accent recolors only accent fish, not the whole school.
+   */
   private regenerateColors(): void {
     const palette: Palette = PALETTES[this.paletteName];
     const stops = palette.stops.map(hexToRgb);
-    const accent = hexToRgb(palette.accent);
+    const accent = hexToRgb(this._accent ?? palette.accent);
+    const share = this.params.accentShare;
+    this.lastAccentShare = share;
+    const rand = mulberry32(this.colorSeed);
     for (let i = 0; i < this.capacity; i++) {
+      const pick = rand();
+      const t = Math.pow(rand(), 0.8) * (stops.length - 1);
       let rgb: [number, number, number];
-      if (Math.random() < palette.accentChance) {
-        rgb = [...accent];
+      if (pick < share) {
+        rgb = accent;
       } else {
-        const t = Math.pow(Math.random(), 0.8) * (stops.length - 1);
         const idx = Math.min(stops.length - 2, Math.floor(t));
         const f = t - idx;
         rgb = [
@@ -551,10 +584,17 @@ export class GpuSwarm implements SwarmSystem {
         ];
       }
       const st = i * 8;
-      this.staticsHost[st] = Math.min(1, rgb[0] * (0.9 + Math.random() * 0.2));
-      this.staticsHost[st + 1] = Math.min(1, rgb[1] * (0.9 + Math.random() * 0.2));
-      this.staticsHost[st + 2] = Math.min(1, rgb[2] * (0.9 + Math.random() * 0.2));
+      this.staticsHost[st] = Math.min(1, rgb[0] * (0.9 + rand() * 0.2));
+      this.staticsHost[st + 1] = Math.min(1, rgb[1] * (0.9 + rand() * 0.2));
+      this.staticsHost[st + 2] = Math.min(1, rgb[2] * (0.9 + rand() * 0.2));
     }
+  }
+
+  /** Regenerate and upload colors (no-op before the first spawn). */
+  private recolor(): void {
+    if (!this.staticsHost) return;
+    this.regenerateColors();
+    this.device.queue.writeBuffer(this.statB, 0, this.staticsHost);
   }
 
   private createBindGroups(): void {
@@ -924,6 +964,9 @@ export class GpuSwarm implements SwarmSystem {
   update(deltaTime: number): void {
     if (!this.dyn) return;
     const P = this.params;
+    // The panel writes params directly, so the share is polled. Ahead of
+    // the dt check so a paused school still recolors.
+    if (P.accentShare !== this.lastAccentShare) this.recolor();
     const dt = Math.min(deltaTime, 0.05) * P.timeScale;
     if (dt <= 0) return;
     this.time += dt;
@@ -1281,6 +1324,18 @@ export class GpuSwarm implements SwarmSystem {
   dispose(): void {
     this.destroyBuffers();
   }
+}
+
+/** Small seeded PRNG: the same seed replays the same color draws. */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
 function hexToRgb(hex: string): [number, number, number] {

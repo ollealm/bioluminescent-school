@@ -60,6 +60,13 @@ comparing full parameter sets live:
     additively into one glowing spot while the resting body keeps its
     brightness. A box count was tried first and banded along the grid
     planes; the tent kernel is position-continuous.
+- **Accent fish** (GPU only, appearance only): `accentShare` (default
+  0.05, 0 removes them) is the fraction of fish in the palette's accent
+  color, replacing each palette's fixed `accentChance`; the panel's
+  *Accent* picker overrides the color itself, saved as the snapshot's
+  optional `accent` key (a feel without one shows the palette's own).
+  Recolors replay each fish's seeded draws, so only the fish that change
+  role change color. The CPU fallback keeps v3's per-palette accents.
 - `flight` (round four, owner: "keep the small area around the cursor but
   make the reaction much stronger, so hit fish leave the school and take
   others with them, with a dynamic delay"): a fish whose fear exceeds

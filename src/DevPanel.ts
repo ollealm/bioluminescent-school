@@ -127,6 +127,7 @@ const GROUPS: Group[] = [
       { key: "stretch", label: "Stretch", min: 0, max: 3, step: 0.05, impact: 2, hint: "Fast particles render as streaks along their motion" },
       { key: "crowdDim", label: "Crowd dim", min: 0, max: 1, step: 0.01, impact: 2, hint: "Dim fish in dense cores so pile-ups don't blow out into one glowing spot" },
       { key: "twinkle", label: "Twinkle", min: 0, max: 1, step: 0.01, impact: 1, hint: "Slow individual brightness oscillation" },
+      { key: "accentShare", label: "Accent share", min: 0, max: 0.2, step: 0.005, impact: 1, hint: "Fraction of fish in the palette's accent color - 0 removes them" },
     ],
   },
 ];
@@ -195,7 +196,7 @@ const CSS = `
 }
 .blm-panel summary::before { content: "▸ "; color: rgba(96,255,178,.5); }
 .blm-panel details[open] summary::before { content: "▾ "; }
-.blm-selects { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 4px 0 2px; }
+.blm-selects { display: grid; grid-template-columns: 1fr 1fr auto; gap: 6px; margin: 4px 0 2px; }
 .blm-select-wrap { display: flex; flex-direction: column; gap: 3px; }
 .blm-select-wrap span { font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: rgba(140,230,190,.5); }
 .blm-panel select {
@@ -204,6 +205,21 @@ const CSS = `
   border: 1px solid rgba(96, 255, 178, 0.2);
   font: 11px ui-monospace, Menlo, monospace;
 }
+.blm-accent { display: flex; gap: 4px; }
+.blm-panel input[type="color"] {
+  width: 34px; height: 26px; padding: 3px; border-radius: 7px; cursor: pointer;
+  background: rgba(10, 40, 28, 0.5); border: 1px solid rgba(96, 255, 178, 0.2);
+}
+.blm-panel input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+.blm-panel input[type="color"]::-webkit-color-swatch { border: none; border-radius: 4px; }
+.blm-panel input[type="color"]::-moz-color-swatch { border: none; border-radius: 4px; }
+.blm-accent-reset {
+  width: 22px; height: 26px; padding: 0; border-radius: 7px; cursor: pointer;
+  border: 1px solid rgba(96, 255, 178, 0.2); background: rgba(10, 40, 28, 0.4);
+  color: #7dffb0; font: 12px ui-monospace, Menlo, monospace; transition: all .12s ease;
+}
+.blm-accent-reset:hover:not(:disabled) { border-color: rgba(96, 255, 178, 0.6); }
+.blm-panel input[type="color"]:disabled, .blm-accent-reset:disabled { opacity: .35; cursor: default; }
 .blm-count-note { font-size: 9px; color: rgba(150,220,185,.4); margin-top: 2px; }
 .blm-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 10px; }
 .blm-action {
@@ -250,6 +266,8 @@ export class DevPanel {
   private presetBtns = new Map<string, HTMLButtonElement>();
   private styleSel!: HTMLSelectElement;
   private paletteSel!: HTMLSelectElement;
+  private accentInput!: HTMLInputElement;
+  private accentReset!: HTMLButtonElement;
   private countInput!: HTMLInputElement;
   private countOut!: HTMLOutputElement;
   private rebuildTimer: number | undefined;
@@ -432,12 +450,15 @@ export class DevPanel {
         Object.entries(PALETTES).map(([k, p]) => [k, p.label]),
         (v) => {
           sys.setPalette(v as PaletteName);
+          // Without an override the picker follows the new palette's accent.
+          this.syncAccent();
           this.save();
         },
         (sel) => (this.paletteSel = sel),
         "Color scheme — also sets the flash hue",
       ),
     );
+    selects.appendChild(this.makeAccentPicker());
     root.appendChild(selects);
 
     // Particle count (debounced rebuild)
@@ -514,6 +535,7 @@ export class DevPanel {
         // outside the presets' keys would otherwise survive the reset.
         Object.assign(sys.params, DEFAULT_PARAMS);
         sys.setPalette("emerald");
+        sys.setAccent?.(null);
         sys.setStyle("glow");
         for (const [cat, name] of Object.entries(DEFAULT_PRESETS)) {
           sys.applyPreset(cat as PresetCategory, name);
@@ -620,6 +642,47 @@ export class DevPanel {
     return wrap;
   }
 
+  /** Accent fish color: a native picker plus a reset to the palette's own. */
+  private makeAccentPicker(): HTMLElement {
+    const sys = this.system;
+    const wrap = el("div", "blm-select-wrap");
+    wrap.appendChild(el("span", "", "Accent"));
+    const row = el("div", "blm-accent");
+    this.accentInput = document.createElement("input");
+    this.accentInput.type = "color";
+    this.accentReset = el("button", "blm-accent-reset", "↺") as HTMLButtonElement;
+    this.accentReset.title = "Back to the palette's own accent";
+    if (sys.setAccent) {
+      wrap.title = "Color of the accent fish (how many: Accent share under Appearance)";
+      this.accentInput.addEventListener("input", () => {
+        sys.setAccent?.(this.accentInput.value);
+        // Not syncAccent: rewriting the value mid-drag would fight the picker.
+        this.accentReset.disabled = false;
+        this.save();
+      });
+      this.accentReset.addEventListener("click", () => {
+        sys.setAccent?.(null);
+        this.syncAccent();
+        this.save();
+      });
+    } else {
+      // The CPU fallback is the untouched v3 reference: palette accents only.
+      wrap.title = "GPU only - the CPU fallback keeps the palette's accent";
+      this.accentInput.disabled = true;
+    }
+    row.appendChild(this.accentInput);
+    row.appendChild(this.accentReset);
+    wrap.appendChild(row);
+    return wrap;
+  }
+
+  /** Show the override, else the palette's accent; reset only when overridden. */
+  private syncAccent(): void {
+    const override = this.system.accentColor ?? null;
+    this.accentInput.value = override ?? PALETTES[this.system.paletteName].accent;
+    this.accentReset.disabled = override === null;
+  }
+
   private makeAction(
     label: string,
     fn: (btn: HTMLButtonElement) => void,
@@ -648,6 +711,7 @@ export class DevPanel {
     }
     this.styleSel.value = sys.styleName;
     this.paletteSel.value = sys.paletteName;
+    this.syncAccent();
     this.countInput.value = String(sys.getCount());
     this.countOut.textContent = String(sys.getCount());
   }
@@ -699,7 +763,7 @@ export class DevPanel {
 }
 
 /** Params only the GPU kernel implements (added after the v3 port). */
-const GPU_ONLY_KEYS = new Set<string>(["collapse", "shape", "bite", "flight", "crowdDim"]);
+const GPU_ONLY_KEYS = new Set<string>(["collapse", "shape", "bite", "flight", "crowdDim", "accentShare"]);
 
 function el(tag: string, cls: string, text?: string): HTMLElement {
   const node = document.createElement(tag);

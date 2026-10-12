@@ -410,6 +410,12 @@ export interface SwarmParams {
    * (bit-identical to before).
    */
   crowdDim: number;
+  /**
+   * Accent share (GPU only, appearance only): fraction of fish that take the
+   * palette's accent color. 0 removes them. Replaces the palette's own
+   * accentChance on the GPU backend; the CPU fallback keeps v3's.
+   */
+  accentShare: number;
 }
 
 export const DEFAULT_PARAMS: SwarmParams = {
@@ -467,4 +473,5 @@ export const DEFAULT_PARAMS: SwarmParams = {
   motionGlow: 0.9,
   stretch: 1.3,
   crowdDim: 0,
+  accentShare: 0.05,
 };

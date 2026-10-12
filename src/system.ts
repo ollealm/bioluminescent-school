@@ -24,6 +24,13 @@ export interface SwarmSystem {
   applyPreset(category: PresetCategory, name: string): void;
   setPalette(name: PaletteName): void;
   setStyle(name: StyleName): void;
+  /**
+   * Accent color override ("#rrggbb"), null = the palette's own. Optional:
+   * GPU only, absent on the CPU fallback (the panel feature-detects it).
+   */
+  readonly accentColor?: string | null;
+  /** Override the palette's accent color; null restores the palette's own. */
+  setAccent?(hex: string | null): void;
   getSnapshot(): Snapshot;
   applySnapshot(s: Partial<Snapshot>): void;
   /** Recreate all particle state for a new count. Params are untouched. */
@@ -70,4 +77,11 @@ export interface Snapshot {
   style: StyleName;
   count: number;
   params: SwarmParams;
+  /**
+   * Accent color override ("#rrggbb"), GPU only. getSnapshot() omits it
+   * while the palette's own accent shows; in applySnapshot() absent leaves
+   * the current override and null clears it. Additive, so the CPU reference
+   * and older snapshots stay valid at version 3.
+   */
+  accent?: string | null;
 }

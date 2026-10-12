@@ -81,7 +81,8 @@ export function installFeelSwitcher(
     void _count;
     // Replace, not merge: keys the snapshot predates (crowdDim in
     // site-default) must return to defaults, not keep the last feel's.
-    apply({ ...rest, params: { ...DEFAULT_PARAMS, ...rest.params } });
+    // Same for the accent: a feel without one clears the last override.
+    apply({ ...rest, accent: rest.accent ?? null, params: { ...DEFAULT_PARAMS, ...rest.params } });
     // A feel usually carries the preset names it was derived from, but its
     // sliders have moved on. Highlighting "Lagoon" over olle-work's values
     // misleads (and clicking it wipes the feel's tuning), so a category
