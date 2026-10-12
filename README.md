@@ -75,13 +75,16 @@ comparing full parameter sets live:
   commit-to-return and the post-strike homing all wait until its fear has
   decayed. With panic spread the wave reaches neighbors hop by hop
   (0.92× per hop), so flight sets the reach in hops and fearSpread sets
-  the delay. olle-work: flight 0.9, spread 4.0, repel 90, flee 60,
-  regroup 4.0 with fearDecay 2.5 - the intensity comes from force and
-  spread speed, the brevity from fast decay (fear 1 → 0.1 in 0.9 s), so a
-  pass blows the school out to twice its size by 1.6 s and it is compact
-  again by 3.2 s. A low flight threshold with slow decay (0.9 / 0.35) was
-  the wrong way to get "strong": lingering fear kept the whole school
-  cohesion-damped for seconds, broad and slow. Spontaneous light was made subtle at the same time (spontaneous
+  the delay. olle-work: flight 0.7, spread 2.0, decay 2.0, repel 90,
+  flee 60, regroup 4.0 - the intensity comes from force, the brevity from
+  fast decay. Two wrong turns are worth remembering: a low flight
+  threshold with slow decay (0.9 / 0.35) kept lingering fear damping
+  cohesion for seconds (the school went broad and slow), and spread 4.0
+  let a cursor that *stays* over the school re-infect fear faster than it
+  decays, so every fish stayed in flight radially away from the pointer (a
+  sphere again) and nothing regrouped until the cursor left - a pass that
+  exits after 2 s looked great in the filmstrip and hid it. Test every
+  predator change with a parked cursor *and* a continuous stir. Spontaneous light was made subtle at the same time (spontaneous
   0.2, flashBrightness 0.55, kick 1.6; transmission stays 2.8 because at 2.2
   click cascades no longer grew and smoldered past the 5 s bar).
 - **Visual review** - `await __sweep()` (standard predator pass: the cursor
