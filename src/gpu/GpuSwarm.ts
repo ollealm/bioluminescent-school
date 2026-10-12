@@ -47,6 +47,7 @@ const EV_WANDER = 4;
 const EV_SCATTER = 5;
 const EV_IGNITE = 6;
 const EV_STRIKE = 7;
+const EV_SHIVER = 8;
 
 const D = TUNING.gridDim;
 const CELLS = D * D * D;
@@ -195,6 +196,12 @@ export class GpuSwarm implements SwarmSystem {
 
   private wanderClock = 5;
 
+  // Evade: smoothed displacement of the school's center away from a parked
+  // predator (stays zero at evade 0).
+  private evadeX = 0;
+  private evadeY = 0;
+  private evadeZ = 0;
+
   // Strike (flick) detection.
   private strikeCooldown = 0;
   private lastSlowTime = 0;
@@ -206,6 +213,8 @@ export class GpuSwarm implements SwarmSystem {
   private headY = 0;
   private headZ = 0;
   private startleClock = 25;
+  /** Shiver (GPU-only): countdown to the next resting agitation wave. */
+  private shiverClock = 8;
   private dirAlign = 1;
   private dirCoh = 1;
   private dirMill = 0;
@@ -416,6 +425,7 @@ export class GpuSwarm implements SwarmSystem {
       this.flockN = count;
       this.rmsRadius = this.nominalRmsRadius();
       this.meanFear = 0;
+      this.evadeX = this.evadeY = this.evadeZ = 0;
       return;
     }
     this.destroyBuffers();
@@ -468,6 +478,7 @@ export class GpuSwarm implements SwarmSystem {
     this.flockN = count;
     this.rmsRadius = this.nominalRmsRadius();
     this.meanFear = 0;
+    this.evadeX = this.evadeY = this.evadeZ = 0;
     this.generation++;
   }
 
@@ -786,20 +797,41 @@ export class GpuSwarm implements SwarmSystem {
     });
   }
 
+  /** A shiver pocket around a random fish; radius in units of perception. */
+  private spawnShiver(): void {
+    // Arm the alarm: a single pocket rarely lifts the school's mean fear
+    // past the threshold (linear falloff averages 0.25 over the sphere and
+    // contagion halves per hop), so without this the wave would fade
+    // without the re-contraction that is the point of a shiver. The alarm
+    // then tracks the (lower) mean fear, crosses half its peak as the wave
+    // dies, and the existing logic fires the collapse.
+    this.alarm = Math.max(this.alarm, 0.12);
+    this.alarmPeak = Math.max(this.alarmPeak, 0.12);
+    this.pending.push({
+      kind: EV_SHIVER,
+      index: (Math.random() * this.count) | 0,
+      needsResolve: true,
+      misc: [0.55 + 0.3 * Math.random(), 2.0 + Math.random(), 0, 0],
+    });
+  }
+
   private spawnWanderGroup(): void {
     const P = this.params;
     // groupSize is "fish per referenceCount" (HANDOFF §5: fractions, not
-    // absolute counts). Recruit within r=2.8 of the leader with probability
-    // targetGroup / expectedInRadius; both scale with count, so p doesn't.
+    // absolute counts). Recruit within rRecruit of the leader with
+    // probability targetGroup / expectedInRadius; both scale with count, so
+    // p doesn't. Large groups recruit a bigger pocket so they leave as a
+    // sub-school, not a thinned-out cloud (2.8 at the reference's sizes).
+    const rRecruit = 2.8 + 2.0 * Math.min(1, P.groupSize / 200);
     const schoolR = Math.max(2, P.containRadius * 0.85);
     const vSchool = (4 / 3) * Math.PI * schoolR ** 3;
-    const vRecruit = (4 / 3) * Math.PI * 2.8 ** 3;
+    const vRecruit = (4 / 3) * Math.PI * rRecruit ** 3;
     const prob = Math.min(1, (P.groupSize * vSchool) / (GPU_TUNING.referenceCount * vRecruit));
     this.pending.push({
       kind: EV_WANDER,
       index: (Math.random() * this.count) | 0,
       needsResolve: true,
-      misc: [6 + Math.random() * 7, prob, 0, 0],
+      misc: [6 + Math.random() * 7, prob, rRecruit, 0],
     });
   }
 
@@ -957,6 +989,17 @@ export class GpuSwarm implements SwarmSystem {
       if (P.startle > 0.02 && this.mood !== M_STARTLE) this.startle();
     }
 
+    // Resting shivers: per-particle fear and a dart, never a mood change,
+    // so the director keeps its course and nothing lights up.
+    const shiver = P.shiver ?? 0;
+    if (shiver > 0.02) {
+      this.shiverClock -= dt;
+      if (this.shiverClock <= 0) {
+        this.shiverClock = (6 + Math.random() * 6) / Math.max(0.05, shiver);
+        this.spawnShiver();
+      }
+    }
+
     this.moodTimer -= dt;
     if (this.moodTimer <= 0) {
       this.enterMood(this.mood === M_STARTLE ? M_CRUISE : this.pickNextMood());
@@ -1105,8 +1148,73 @@ export class GpuSwarm implements SwarmSystem {
       (Math.sin(t * 0.107 + 1.3) + 0.5 * Math.sin(t * 0.19)) * roamR * 0.8;
     const targetZ = Math.sin(t * 0.147 + 4.2) * roamR * 0.45;
 
+    // Evade: the school dodges a parked predator as a body. Its herd
+    // center and roam target shift away from the pointer and the heading
+    // bends off it, so the threat ends up at the edge with the body
+    // streaming past instead of a static shell around it.
+    const cen = this.centroid;
+    let evW = 0;
+    let evNX = 0;
+    let evNY = 0;
+    let evNZ = 0;
+    if (this.pointerActive && P.evade > 0) {
+      const dx = cen.x - px;
+      const dy = cen.y - py;
+      const dz = cen.z - pz;
+      // Depth-squashed metric, like the kernel's danger zone.
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * 0.45 * (dz * 0.45));
+      evW =
+        P.evade *
+        Math.min(1, Math.max(0, 1 - dist / (P.containRadius * 0.9)));
+      if (dist < 0.3) {
+        // Pointer on the centroid: no direction to read, so step aside
+        // perpendicular to the heading (stable frame to frame).
+        const hl = Math.hypot(this.headX, this.headY) || 1;
+        evNX = -this.headY / hl;
+        evNY = this.headX / hl;
+      } else {
+        // Direction from the true offset; the squash only sets the range.
+        const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        evNX = dx / len;
+        evNY = dy / len;
+        evNZ = dz / len;
+      }
+    }
+    const evTarget = P.containRadius * 0.7 * evW;
+    // One pole (0.35 s) so the center never jumps; with the pointer gone
+    // the target is 0 and it decays at the same rate.
+    const ek = 1 - Math.exp(-dt / 0.35);
+    this.evadeX += (evNX * evTarget - this.evadeX) * ek;
+    this.evadeY += (evNY * evTarget - this.evadeY) * ek;
+    this.evadeZ += (evNZ * evTarget - this.evadeZ) * ek;
+    // Snap home so evade 0 is the reference exactly (the pole only
+    // approaches zero).
+    const evRest =
+      Math.abs(this.evadeX) + Math.abs(this.evadeY) + Math.abs(this.evadeZ);
+    if (!(P.evade > 0) && evRest < 1e-4) {
+      this.evadeX = this.evadeY = this.evadeZ = 0;
+    }
+    const roamX = targetX + this.evadeX;
+    const roamY = targetY + this.evadeY;
+    const roamZ = targetZ + this.evadeZ;
+
     // The school's mind: moods, heading, false alarms.
     this.updateDirector(dt, targetX, targetY);
+
+    // Bend the heading away from the predator, like the home bend.
+    if (evW > 0) {
+      const xl = Math.hypot(evNX, evNY);
+      if (xl > 1e-6) {
+        const k = Math.min(1, evW * dt * 4);
+        const nx = this.headX + (evNX / xl - this.headX) * k;
+        const ny = this.headY + (evNY / xl - this.headY) * k;
+        const nz = this.headZ * (1 - k * 0.5);
+        const l = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+        this.headX = nx / l;
+        this.headY = ny / l;
+        this.headZ = nz / l;
+      }
+    }
 
     // Spontaneous flashes: swarm-wide rate, NOT per-particle (HANDOFF §4.8).
     let spontAcc = P.spontaneous * dt;
@@ -1143,9 +1251,9 @@ export class GpuSwarm implements SwarmSystem {
     U[13] = 0.55 + this.dirSpeed * 1.3;
     U[14] = breatheR;
     U[15] = breatheR * 2.1;
-    U[16] = targetX;
-    U[17] = targetY;
-    U[18] = targetZ;
+    U[16] = roamX;
+    U[17] = roamY;
+    U[18] = roamZ;
     // Fine-entries offset inside gridData (capacity-dependent; exact in f32).
     U[19] = FINE_CELLS + 1 + CELLS + 1 + this.capacity;
     U[20] = px;
@@ -1200,6 +1308,11 @@ export class GpuSwarm implements SwarmSystem {
     U[68] = P.rally ?? 0;
     U[69] = P.herd ?? 0;
     U[70] = this.dirHerd;
+    U[71] = P.evade ?? 0;
+    U[72] = cen.x + this.evadeX;
+    U[73] = cen.y + this.evadeY;
+    U[74] = cen.z + this.evadeZ;
+    U[75] = P.sheet ?? 0;
 
     // ---- Pack events ----
     const batch = this.pending.splice(0, MAX_EVENTS);

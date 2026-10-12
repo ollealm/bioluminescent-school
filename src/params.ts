@@ -343,6 +343,20 @@ export interface SwarmParams {
    * The director swells it during a contraction. 0 = the reference.
    */
   herd: number;
+  /**
+   * GPU-only. Waves of agitation at rest: on a random clock a pocket of fish
+   * takes fear and darts outward; fear contagion carries the shiver through
+   * the school and the regroup/alarm machinery re-contracts it. No light.
+   * Scales the event rate. 0 = no events (the reference).
+   */
+  shiver: number;
+  /**
+   * GPU-only. Flattens the school toward the view plane: a damped z spring
+   * toward the school's mean depth plus stronger depth cohesion. 25k fish
+   * stacked ~20 deep along the camera axis average density waves away; a
+   * school a few fish deep shows them. 0 = the reference.
+   */
+  sheet: number;
 
   // --- Ambient motion ---
   flowStrength: number;
@@ -383,6 +397,12 @@ export interface SwarmParams {
    * the edge) and overshoot through it. 0 = v3.
    */
   rally: number;
+  /**
+   * GPU-only. The school evades a parked predator as a body: its center
+   * shifts away and fish slide around the threat instead of holding a
+   * static shell. 0 = v3.
+   */
+  evade: number;
   repelForce: number;
   splash: number;
   /** How hard frightened particles keep swimming away from the cursor. */
@@ -447,6 +467,8 @@ export const DEFAULT_PARAMS: SwarmParams = {
   collapse: 0,
   shape: 0,
   herd: 0,
+  shiver: 0,
+  sheet: 0,
 
   flowStrength: 0.9,
   flowScale: 0.09,
@@ -466,6 +488,7 @@ export const DEFAULT_PARAMS: SwarmParams = {
   bite: 0,
   flight: 0,
   rally: 0,
+  evade: 0,
   repelForce: 38,
   splash: 1.0,
   fleeForce: 30,

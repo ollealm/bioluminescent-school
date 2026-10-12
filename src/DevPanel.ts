@@ -56,6 +56,8 @@ const GROUPS: Group[] = [
       { key: "collapse", label: "Collapse", min: 0, max: 2, step: 0.05, impact: 3, hint: "How often and how hard the school contracts in on itself, then releases" },
       { key: "shape", label: "Body shape", min: 0, max: 1, step: 0.01, impact: 2, hint: "Stretch the school along its heading - a traveling shoal instead of a ball" },
       { key: "herd", label: "Herd", min: 0, max: 1, step: 0.01, impact: 3, hint: "Selfish-herd drive - every fish wants deeper into the school; edge fish rush in and the body pulses against its own crowd pressure" },
+      { key: "shiver", label: "Shiver", min: 0, max: 2, step: 0.05, impact: 3, hint: "Waves of agitation at rest - a pocket darts, neighbors catch it, a shiver runs through the school and it re-contracts. No light." },
+      { key: "sheet", label: "Sheet", min: 0, max: 1, step: 0.01, impact: 3, hint: "Flatten the school toward the view plane - a few fish deep instead of a ball, so waves, holes and collapses show instead of averaging away in depth" },
     ],
   },
   {
@@ -81,7 +83,7 @@ const GROUPS: Group[] = [
     sliders: [
       { key: "wanderRate", label: "Wander rate", min: 0, max: 1, step: 0.01, impact: 2, hint: "How often a small group breaks away to explore" },
       { key: "returnPull", label: "Return pull", min: 0.2, max: 5, step: 0.05, impact: 2, hint: "Homing strength when they head back to reunite" },
-      { key: "groupSize", label: "Group size", min: 1, max: 30, step: 1, impact: 1, hint: "How many leave together" },
+      { key: "groupSize", label: "Group size", min: 1, max: 600, step: 1, impact: 1, hint: "How many leave together (per 2,600 fish) - hundreds = a sub-school that peels off and merges back" },
       { key: "wanderPull", label: "Wander pull", min: 0, max: 3, step: 0.05, impact: 1, hint: "How determinedly wanderers push away from the school" },
     ],
   },
@@ -94,6 +96,7 @@ const GROUPS: Group[] = [
       { key: "mouseRadius", label: "Radius", min: 1, max: 12, step: 0.1, impact: 3, hint: "Size of the danger zone around the cursor" },
       { key: "bite", label: "Bite", min: 0, max: 0.9, step: 0.01, impact: 3, hint: "How crisp the danger zone's edge is - 0 = soft gravity-like falloff, high = nothing until close, then full bolt" },
       { key: "flight", label: "Flight", min: 0, max: 1, step: 0.01, impact: 3, hint: "How far fear carries a fish out of the school before it regroups - with panic spread, the hit fish take neighbors with them" },
+      { key: "evade", label: "Evade", min: 0, max: 1, step: 0.01, impact: 3, hint: "The school avoids the predator as a body - its center shifts away and fish slide around the threat instead of forming a shell" },
       { key: "repelForce", label: "Repel force", min: 0, max: 90, step: 1, impact: 3, hint: "Escape steering strength inside the danger zone" },
       { key: "regroup", label: "Regroup drive", min: 0, max: 4, step: 0.05, impact: 3, hint: "Post-threat urge to rush back to the school" },
       { key: "rally", label: "Rally", min: 0, max: 1, step: 0.01, impact: 3, hint: "How violently frightened fish rush back to the school's center once the threat is gone - they overshoot through it" },
@@ -765,7 +768,7 @@ export class DevPanel {
 }
 
 /** Params only the GPU kernel implements (added after the v3 port). */
-const GPU_ONLY_KEYS = new Set<string>(["collapse", "shape", "herd", "bite", "flight", "rally", "crowdDim", "accentShare"]);
+const GPU_ONLY_KEYS = new Set<string>(["collapse", "shape", "herd", "shiver", "sheet", "bite", "flight", "rally", "evade", "crowdDim", "accentShare"]);
 
 function el(tag: string, cls: string, text?: string): HTMLElement {
   const node = document.createElement(tag);

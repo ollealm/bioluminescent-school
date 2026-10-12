@@ -113,6 +113,32 @@ comparing full parameter sets live:
   return, not only the fish that fled. olle-work = rally-tight + herd 0.4
   + collapse 1.0. At herd 0.5 the resting school became a hard-edged ball
   and a startle implosion ran 3% hot.
+- **Round seven - why no amount of center-pull made it alive, and what did.**
+  Owner: "herd just compacts the school; the cursor is still a sphere;
+  it needs to feel alive". Diagnosis from the filmstrips: (1) a cursor
+  parked inside a herd-pulled school reaches a static equilibrium shell;
+  (2) 25,000 fish in a 3D ball seen face-on are stacked ~20 deep along the
+  view axis, so every density wave, hole and collapse averages away into
+  a uniform disc whatever the dynamics do. Four levers followed:
+  `evade` (the school avoids the predator as a body: the roam target,
+  heading, herd and rally centers shift away from a cursor inside the
+  school, and a still predator's escape is tangential, so the hollow is a
+  moving arc, not a shell); `shiver` (silent agitation waves at rest: a
+  pocket darts, fear contagion carries it, and the alarm is armed so each
+  wave ends in a re-contraction - no light); `sheet` (a damped z-spring
+  toward the school's mean depth plus depth-weighted cohesion, so the
+  school is a few fish deep and its structure shows; at 0.7 25k fish
+  spread into a faint veil because the tank cannot hold them a few layers
+  deep, 0.4 is the compromise); and cohesive wander groups (wanderers keep
+  cohesion and alignment among themselves and recruit a pocket up to
+  4.8 u, so hundreds peel off as a sub-school and merge back - this one
+  changes wander behavior at every setting, the CPU backend still has v3
+  wanderers). olle-work = rally-tight + sheet 0.4, cohesion 1.3,
+  separation 1.3, herd 0.2, shiver 1.0, collapse 1.0, evade 0.6,
+  groupSize 300, wanderRate 0.8. Measured: elongation 4.8 mean, breathing
+  ±59%, coherence swinging 0.22…0.95; a 3 s stir blows the body into a
+  turbulent wave, implodes it into a tight core at 1.4–2.8 s, reformed by
+  4.2 s.
 - **Visual review** - `await __sweep()` (standard predator pass: the cursor
   enters from the left, crosses into the school, parks, leaves) and
   `await __filmstrip({ frames, intervalMs, path, click })` return one

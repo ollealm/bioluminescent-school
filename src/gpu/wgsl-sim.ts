@@ -28,8 +28,11 @@ import { GPU_TUNING, TUNING } from "../params";
  *   U[14] jitter, wanderPull, returnPull, repelForce
  *   U[15] fleeForce, regroup, containRadius, gait
  *   U[16] dirSep, shape, bite, flight   (lifelike levers; 1, 0, 0, 0 = v3 kernel)
- *   U[17] rally, herd, herdGain, 0      (lifelike levers; herd 0 = v3 kernel,
+ *   U[17] rally, herd, herdGain, evade  (lifelike levers; herd 0 = v3 kernel,
  *                                        herdGain is the director's, 1 = idle)
+ *   U[18] evadeCenter.xyz, sheet        (centroid shifted off the predator,
+ *                                        read only at evade > 0; sheet 0 =
+ *                                        v3 kernel)
  */
 
 /** Uniform array length in vec4s (80 floats). Shared with GpuSwarm.ts. */
@@ -104,6 +107,7 @@ const EV_WANDER: u32 = 4u;
 const EV_SCATTER: u32 = 5u;
 const EV_IGNITE: u32 = 6u;
 const EV_STRIKE: u32 = 7u;
+const EV_SHIVER: u32 = 8u;
 const STRIKE_REACH: f32 = ${GPU_TUNING.strikeReach};
 const STRIKE_APEX: f32 = ${GPU_TUNING.strikeApexWidth};
 
@@ -127,7 +131,7 @@ struct Ev {
   tag: vec4u,   // kind, index, needsResolve, 0
   center: vec4f, // xyz, radius
   dir: vec4f,    // xyz, sign
-  misc: vec4f,   // per-kind: WANDER(duration, prob) SCATTER(-) IGNITE(-)
+  misc: vec4f,   // per-kind: WANDER(duration, prob, radius) SHIVER(amp, radius/perception)
 }
 
 fn pcg(v: u32) -> u32 {
@@ -259,9 +263,9 @@ fn scanFine(@builtin(local_invocation_index) lid: u32) {
 
 /**
  * Event resolve: events whose epicenter is "particle #index" (startle at a
- * random fish, turn vanguard, wander leader) get their center — and for
- * wander groups their outward heading — filled in on-GPU, so the host never
- * needs a position readback to schedule behavior.
+ * random fish, turn vanguard, wander leader, shiver pocket) get their
+ * center — and for wander groups their outward heading — filled in on-GPU,
+ * so the host never needs a position readback to schedule behavior.
  */
 export const WGSL_RESOLVE = /* wgsl */ `
 ${WGSL_COMMON}
@@ -537,8 +541,15 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
   let rally = U[17].x;
   let herd = U[17].y;
   let herdGain = U[17].z;
+  let evade = U[17].w;
+  let evadeCen = U[18].xyz;
+  let sheet = U[18].w;
   let perception2 = perception * perception;
   let cen = centroid[0].xyz;
+  // The center the herd/rally/regroup drives aim for: with evade on, the
+  // host shifts it off a parked predator so the school pulls away from the
+  // threat instead of into it (that pull is what built the static shell).
+  let herdCen = select(cen, evadeCen, evade > 0.001);
 
   // ---- Load state ----
   let dIn = dynIn[i];
@@ -562,8 +573,9 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
   let seed = st.traits.z;
 
   // ---- Host events (burst / startle / vanguard / wander / scatter /
-  // spontaneous ignition). The CPU applies these between frames; here they
-  // apply at frame start, before anything reads own state. ----
+  // spontaneous ignition / strike / shiver). The CPU applies these between
+  // frames; here they apply at frame start, before anything reads own
+  // state. ----
   for (var ev = 0u; ev < eventCount; ev++) {
     let E = events[ev];
     let salt = 100u + ev * 16u;
@@ -610,7 +622,10 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
         if (mode == FLOCK) {
           let dd = pos - E.center.xyz;
           let leader = i == E.tag.y;
-          if ((dot(dd, dd) <= 2.8 * 2.8 || leader)
+          // Recruit radius from the host (bigger groups, bigger pocket);
+          // 0 = the reference's 2.8.
+          let rr = select(2.8, E.misc.z, E.misc.z > 0.0);
+          if ((dot(dd, dd) <= rr * rr || leader)
               && (leader || rnd(i, salt) < E.misc.y)) {
             mode = WANDER;
             modeTimer = E.misc.x * (0.85 + rnd(i, salt + 1u) * 0.3);
@@ -688,6 +703,22 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
                 &energy, &fired, &refract, &pulse, &pulseSign, &vel, &glow);
             }
           }
+        }
+      }
+      case EV_SHIVER: {
+        // Resting agitation: a pocket takes fear and darts outward. Fear
+        // contagion carries the shiver on; no ignition, energy or glow, so
+        // movement comes before (and here without) light.
+        let r = E.misc.y * perception;
+        let dd = pos - E.center.xyz;
+        let d = length(dd);
+        if (d < r) {
+          let amp = E.misc.x * (1.0 - d / r);
+          fear = max(fear, amp);
+          // The epicenter fish has no outward direction: it darts ahead.
+          let away = select(head, dd / max(d, 1e-6), d > 1e-3);
+          let kick = 2.5 * amp;
+          vel += vec3f(away.x * kick, away.y * kick, away.z * kick * 0.6);
         }
       }
       default: {}
@@ -981,10 +1012,17 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
       * (min(1.0, separationW) * relaxMul * (1.0 - fearI)
         * select(1.0, 0.0, threatNear));
 
-    if (mode == FLOCK) {
+    // Wanderers cohere too, so a recruited group holds together under its
+    // shared wanderDir and peels off as a sub-school instead of dust. Once
+    // away from the cloud their only neighbors are each other, so they
+    // can still leave it (HANDOFF §4).
+    if (mode == FLOCK || mode == WANDER) {
       // Cohesion with "arrival" damping (HANDOFF §4.1: without it the
       // swarm collapses into a ball).
       var t = coh / f32(found) - pos;
+      // Sheet: pull harder toward the neighbors' depth so the school
+      // flattens toward the view plane. x1 at sheet 0.
+      t.z *= 1.0 + 2.0 * sheet;
       // Anisotropic cohesion (shape > 0): before arrival damping, so the
       // damping still governs the body and the stretch is a gain, not a
       // spring. Uniform branch - free at shape 0.
@@ -1006,8 +1044,9 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
       }
     }
 
-    if (mode == FLOCK || mode == RETURN_) {
-      // Alignment — match neighbors' *actual* pace (HANDOFF §4.2).
+    {
+      // Alignment — match neighbors' *actual* pace (HANDOFF §4.2). Every
+      // mode now, so a wander group swims as one body.
       var mv = aln / f32(found);
       let ml = length(mv);
       if (ml > 1e-5) {
@@ -1047,6 +1086,16 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
     ) * jitterP;
   }
 
+  // ---- Sheet: flatten the school toward the view plane ----
+  // 25k fish stacked ~20 deep along the camera axis average every density
+  // wave away; a few fish deep, waves, holes and collapses show. A damped
+  // spring in z only toward the school's mean depth. Uniform branch - free
+  // at sheet 0.
+  if (sheet > 0.001 && (mode == FLOCK || mode == WANDER)) {
+    let dz = cen.z - pos.z;
+    acc.z += dz * (sheet * 6.0) - vel.z * (sheet * 2.0);
+  }
+
   // ---- Mode behaviors ----
   let rCenter = length(pos);
   if (mode == FLOCK) {
@@ -1064,7 +1113,7 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
     // separation, the fine grid and crowd dim push back, and that standoff
     // is the pulse. Uniform branch - free at herd 0.
     if (herd > 0.001) {
-      let hv = cen - pos;
+      let hv = herdCen - pos;
       let hdc = length(hv);
       if (hdc > 0.3) {
         let rel = min(2.0, hdc / max(1.0, containRadius * 0.8));
@@ -1115,10 +1164,30 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
 
   // ---- Pointer: a predator to escape (fountain maneuver + wake) ----
   if (pointerOn) {
+    // Evade around a slow predator: blend the radial escape toward the
+    // fish's own sideways momentum, so the hollow is a ring of fish
+    // sliding past at speed rather than a static shell. Exactly the radial
+    // v3 direction at evade 0.
+    var fleeDir = pd / pdist;
+    if (evade > 0.001 && pvm <= 1.5) {
+      let er = pd / max(length(pd), 1e-6);
+      var tang = vel - er * dot(vel, er);
+      var tl = length(tang);
+      if (tl < 0.15) {
+        // Barely moving sideways: pick a side per fish so both occur.
+        tang = vec3f(-er.y, er.x, 0.0) * select(-1.0, 1.0, seed > 0.5);
+        tl = length(tang);
+      }
+      // tl ~ 0 only when the predator is straight along z; stay radial.
+      if (tl > 1e-5) {
+        let e = er * (1.0 - 0.6 * evade) + (tang / tl) * (1.2 * evade);
+        fleeDir = e / max(length(e), 1e-6);
+      }
+    }
     if (uNorm < 1.0) {
       let fall = predFall;
 
-      var e3 = pd / pdist;
+      var e3 = fleeDir;
       if (pvm > 1.5) {
         // Sideways component of the radial escape, relative to the
         // predator's heading: part around its line of travel.
@@ -1164,9 +1233,9 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
     if (fearI > 0.02 && threatNear) {
       let flee = fleeForce * fearI;
       acc += vec3f(
-        (pd.x / pdist) * flee,
-        (pd.y / pdist) * flee,
-        (pd.z / pdist) * flee * 0.35,
+        fleeDir.x * flee,
+        fleeDir.y * flee,
+        fleeDir.z * flee * 0.35,
       );
     }
     // In flight past the threat band: keep bolting, weaker at low flight
@@ -1185,7 +1254,7 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
   // straight back to the shoal. Only outside the shoal body, so the center
   // doesn't clump. Waits until flight has burned off.
   if (fearI > 0.02 && !threatNear && !inFlight) {
-    let h = cen - pos;
+    let h = herdCen - pos;
     let hd = length(h);
     if (hd > containRadius * 0.75) {
       acc += h * ((regroup * 3.2 * sqrt(fearI)) / hd);
