@@ -31,6 +31,10 @@ export class GpuRenderer {
 
   private dpr = 1;
 
+  /** Crowd-dim reference count, one-pole smoothed (see render()). */
+  private nRef = -1;
+  private lastRenderMs = -1;
+
   constructor(
     device: GPUDevice,
     canvas: HTMLCanvasElement,
@@ -193,10 +197,22 @@ export class GpuRenderer {
     R[30] = (v & 255) / 255;
     R[31] = sys.camera.z;
     // Crowd dim reference: the fine-grid 27-cell count a fish sees at the
-    // nominal school density (count spread over a sphere of 0.8 x tank).
-    const schoolR = 0.8 * P.containRadius;
+    // school's own *live* mean density — count spread over the uniform ball
+    // with the school's measured RMS radius (R = rms·√(5/3)). nRef is the
+    // school's own mean density, so a contracted school keeps its brightness
+    // and only local excess (pile-ups above that mean) is dimmed. A nominal
+    // tank-sized ball dimmed the whole body whenever the director's contract
+    // mood condensed it. One-pole smoothed (τ = 0.5 s) so the readback's
+    // ~2-frame staleness and noise can't flicker the brightness.
+    const nowMs = performance.now();
+    const dt =
+      this.lastRenderMs < 0 ? 1 / 60 : Math.min(0.25, Math.max(0, (nowMs - this.lastRenderMs) / 1000));
+    this.lastRenderMs = nowMs;
+    const schoolR = Math.max(1, sys.schoolRmsRadius() * Math.sqrt(5 / 3));
     const schoolVol = (4 / 3) * Math.PI * schoolR ** 3;
-    R[32] = (sys.getCount() / schoolVol) * 27 * GPU_TUNING.fineCellSize ** 3;
+    const nRefNow = (sys.getCount() / schoolVol) * 27 * GPU_TUNING.fineCellSize ** 3;
+    this.nRef = this.nRef < 0 ? nRefNow : this.nRef + (nRefNow - this.nRef) * (1 - Math.exp(-dt / 0.5));
+    R[32] = this.nRef;
     R[33] = P.crowdDim ?? 0;
     this.device.queue.writeBuffer(this.uniformsB, 0, R);
 

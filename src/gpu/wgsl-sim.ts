@@ -300,8 +300,17 @@ fn resolveEvents(@builtin(global_invocation_id) gid: vec3u) {
 /**
  * Reduction over the just-written state. Two result slots:
  *   centroid[0] = flock centroid.xyz, flock count   (steers the school)
- *   centroid[1] = Σ|vel|, count(glow ≥ 0.8), 0, 0    (harness/debug stats)
+ *   centroid[1] = Σ|vel|, count(glow ≥ 0.8),         (harness/debug stats,
+ *                 Σ|pos − cen|² over flock fish, 0    + school spread)
  * Partials live at [2 .. 2+64) and [2+64 .. 2+128).
+ *
+ * The spread lane is measured about `cen` = the *previous* frame's centroid:
+ * reducePass1 reads centroid[0] before reducePass2 of the same frame
+ * overwrites it (separate dispatches in one compute pass execute in order,
+ * and pass 1 only writes the partial slots), so it is 1 frame stale — the
+ * bias is N·|Δcen|², negligible at swimming speed. Divided by the flock
+ * count host-side it gives the school's RMS radius, which sets the crowd
+ * dim's reference density (renderer.ts).
  */
 export const WGSL_REDUCE = /* wgsl */ `
 ${WGSL_COMMON}
@@ -320,6 +329,8 @@ fn reducePass1(
   @builtin(workgroup_id) wg: vec3u,
 ) {
   let n = u32(U[0].w);
+  // Previous frame's centroid (pass 2 rewrites [0] only after this pass).
+  let cen = centroid[0].xyz;
   var accA = vec4f(0.0);
   var accB = vec4f(0.0);
   var k = wg.x * 256u + lid;
@@ -327,10 +338,13 @@ fn reducePass1(
     if (k >= n) { break; }
     let d = dynOut[k];
     let s = selfB[k];
+    var spread = 0.0;
     if (flagsMode(s.s2.w) == FLOCK) {
       accA += vec4f(d.pe.xyz, 1.0);
+      let r = d.pe.xyz - cen;
+      spread = dot(r, r);
     }
-    accB += vec4f(length(d.vf.xyz), select(0.0, 1.0, s.s1.x >= 0.8), 0.0, 0.0);
+    accB += vec4f(length(d.vf.xyz), select(0.0, 1.0, s.s1.x >= 0.8), spread, 0.0);
     k += 64u * 256u;
   }
   wsumA[lid] = accA;
@@ -867,7 +881,10 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
       uNorm = max(sqrt(a * a + p * p), 1e-4);
     }
   }
-  let threatNear = uNorm < 1.4;
+  // The "still threatened" band outside the zone (fear keeps fish fleeing
+  // there) shrinks with bite: a crisp predator must not hold a wide halo
+  // open around a resting cursor. v3's 1.4 at bite 0.
+  let threatNear = uNorm < 1.4 - 0.4 * bite;
   // Smoothstep falloff inside the danger zone — used by the escape steering
   // below and by the crowd-pressure compensation in separation (§5: at 50k
   // the dense wall around the cleared column would otherwise shove fresh

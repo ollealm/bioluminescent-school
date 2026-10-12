@@ -163,6 +163,12 @@ export class GpuSwarm implements SwarmSystem {
   /** GPU-reduced stats, 1–2 frames stale (readback ring). */
   private meanSpeed = 0;
   private hotGlowCount = 0;
+  /**
+   * RMS distance of flock fish from the centroid (readback, ~2 frames
+   * stale). Seeded with a uniform ball of 0.8 × tank (RMS = R·√(3/5)) until
+   * the first readback lands; set in rebuild() once params exist.
+   */
+  private rmsRadius = 0;
 
   // --- Simulation clock ---
   private time = 0;
@@ -233,9 +239,25 @@ export class GpuSwarm implements SwarmSystem {
     return this.centroid;
   }
 
-  /** GPU-reduced frame stats (mean |vel|, count of glow ≥ 0.8); ~2 frames stale. */
-  stats(): { meanSpeed: number; hotGlow: number } {
-    return { meanSpeed: this.meanSpeed, hotGlow: this.hotGlowCount };
+  /**
+   * GPU-reduced frame stats (mean |vel|, count of glow ≥ 0.8, school RMS
+   * radius); ~2 frames stale.
+   */
+  stats(): { meanSpeed: number; hotGlow: number; rmsRadius: number } {
+    return { meanSpeed: this.meanSpeed, hotGlow: this.hotGlowCount, rmsRadius: this.rmsRadius };
+  }
+
+  /**
+   * RMS distance of flock fish from their centroid — the school's live
+   * spread (contracts with the director's contract mood). ~2 frames stale.
+   */
+  schoolRmsRadius(): number {
+    return this.rmsRadius;
+  }
+
+  /** RMS radius of a uniform ball filling 0.8 × the tank: R·√(3/5). */
+  private nominalRmsRadius(): number {
+    return this.params.containRadius * 0.8 * Math.sqrt(3 / 5);
   }
 
   // ------------------------------------------------------------------
@@ -349,6 +371,7 @@ export class GpuSwarm implements SwarmSystem {
       this.parity = 0;
       this.centroid = { x: 0, y: 0, z: 0 };
       this.flockN = count;
+      this.rmsRadius = this.nominalRmsRadius();
       return;
     }
     this.destroyBuffers();
@@ -376,7 +399,8 @@ export class GpuSwarm implements SwarmSystem {
       "gridData",
     );
     this.eventsB = mkStorage(this.eventData.byteLength, "events");
-    // [0] centroid+flockN, [1] stats, then 2×64 partial blocks.
+    // [0] centroid+flockN, [1] stats (Σ|vel|, hotGlow, Σ|pos−cen|², 0),
+    // then 2×64 partial blocks.
     this.centroidB = mkStorage(16 * (2 + 2 * REDUCE_WGS), "centroid");
     this.uniformsB = dev.createBuffer({
       label: "uniforms",
@@ -398,6 +422,7 @@ export class GpuSwarm implements SwarmSystem {
     this.parity = 0;
     this.centroid = { x: 0, y: 0, z: 0 };
     this.flockN = count;
+    this.rmsRadius = this.nominalRmsRadius();
     this.generation++;
   }
 
@@ -1148,6 +1173,8 @@ export class GpuSwarm implements SwarmSystem {
           this.flockN = v[3];
           this.meanSpeed = v[4] / Math.max(1, this.count);
           this.hotGlowCount = v[5];
+          // [1].z = Σ|pos − cen|² over flock fish (see WGSL_REDUCE).
+          this.rmsRadius = Math.sqrt(Math.max(0, v[6]) / Math.max(1, v[3]));
           st.buf.unmap();
           st.state = "free";
         })

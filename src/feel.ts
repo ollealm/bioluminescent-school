@@ -1,5 +1,6 @@
 import type { DevPanel } from "./DevPanel";
-import { DEFAULT_PARAMS } from "./params";
+import { DEFAULT_PARAMS, type SwarmParams } from "./params";
+import { CATEGORY_KEYS, PRESET_REGISTRY, type PresetCategory } from "./presets";
 import type { Snapshot, SwarmSystem } from "./system";
 
 /**
@@ -81,6 +82,19 @@ export function installFeelSwitcher(
     // Replace, not merge: keys the snapshot predates (crowdDim in
     // site-default) must return to defaults, not keep the last feel's.
     apply({ ...rest, params: { ...DEFAULT_PARAMS, ...rest.params } });
+    // A feel usually carries the preset names it was derived from, but its
+    // sliders have moved on. Highlighting "Lagoon" over olle-work's values
+    // misleads (and clicking it wipes the feel's tuning), so a category
+    // whose values no longer match its preset shows no highlight.
+    for (const cat of Object.keys(CATEGORY_KEYS) as PresetCategory[]) {
+      const preset = PRESET_REGISTRY[cat][system.presetNames[cat]];
+      if (!preset) continue;
+      const live = system.params as unknown as Record<keyof SwarmParams, number>;
+      const base = { ...DEFAULT_PARAMS, ...preset.params } as Record<keyof SwarmParams, number>;
+      if (CATEGORY_KEYS[cat].some((k) => live[k] !== base[k])) {
+        system.presetNames[cat] = "";
+      }
+    }
 
     // Already in the URL (boot apply, same key twice): no history churn.
     const query = new URLSearchParams(location.search);

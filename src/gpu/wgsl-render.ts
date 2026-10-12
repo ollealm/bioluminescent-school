@@ -14,7 +14,7 @@
  *   b      size (density-compensated), opacity (compensated), flashBright, twinkle
  *   c      stretch, motionGlow, style, tonemapKnee
  *   flash  flash color rgb, camera z
- *   crowd  nRef (expected 27-fine-cell count at nominal density), crowdDim, 0, 0
+ *   crowd  nRef (expected 27-fine-cell count at the school's live mean density), crowdDim, 0, 0
  */
 import { GPU_TUNING } from "../params";
 

@@ -239,6 +239,22 @@ rationale in place; user-facing sliders keep their v3 meaning throughout.
 | mean-speed swing | 2.6× | 3.4× | ≥ 2× |
 | peak hot-glow (frac) | 0.037 | 0.040 | small |
 
+Round three (same day, owner: "the swarm should move a lot more, glow less
+in interaction, and the stationary cursor is still a large circle"): the
+feel's energy went up (maxSpeed 4.2, schoolDrive 1.4, tempo 1.8, gait 1.0,
+startle 0.9, mill 0.4, flow 1.4, collapse 1.0, drag 0.45; mean speed
+0.76…1.86 u/s vs 0.54…1.67 before), interaction light went down (splash
+0.3, motionGlow 0.5, flashBrightness 0.7, stretch 1.3), and the cursor
+shrank (mouseRadius 2.2, bite 0.7, fleeForce 25, fearDecay 2.0). Two code
+changes came with it: the "still threatened" band that keeps frightened
+fish fleeing outside the zone now shrinks with bite (1.4× → 1.12× the
+radius at bite 0.7), and crowd dim's reference density is the school's
+*live* mean density (Σ|pos − cen|² reduced on-GPU → RMS radius) instead of
+the nominal tank volume, so a contracted school keeps its brightness and
+only local excess is dimmed. Gait is capped at 1.0 on purpose: at 1.3 the
+thrust impulses crossed the shear-glow knee and 13% of the school ran hot
+(invariant §4.6); at 1.0 it is 1.7%.
+
 Re-measured 2026-10-12 at 25,000 with the shipped `olle-work` feel after
 stratified sampling and the re-derived scales (30 s mood run): cascade
 .022 / .095 / .209 / .275 then extinct; outburst 0.97; inburst 0.91;
