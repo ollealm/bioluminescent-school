@@ -28,7 +28,8 @@ import { GPU_TUNING, TUNING } from "../params";
  *   U[14] jitter, wanderPull, returnPull, repelForce
  *   U[15] fleeForce, regroup, containRadius, gait
  *   U[16] dirSep, shape, bite, flight   (lifelike levers; 1, 0, 0, 0 = v3 kernel)
- *   U[17] rally, 0, 0, 0                (lifelike lever; 0 = v3 kernel)
+ *   U[17] rally, herd, herdGain, 0      (lifelike levers; herd 0 = v3 kernel,
+ *                                        herdGain is the director's, 1 = idle)
  */
 
 /** Uniform array length in vec4s (80 floats). Shared with GpuSwarm.ts. */
@@ -302,7 +303,9 @@ fn resolveEvents(@builtin(global_invocation_id) gid: vec3u) {
  * Reduction over the just-written state. Two result slots:
  *   centroid[0] = flock centroid.xyz, flock count   (steers the school)
  *   centroid[1] = Σ|vel|, count(glow ≥ 0.8),         (harness/debug stats,
- *                 Σ|pos − cen|² over flock fish, 0    + school spread)
+ *                 Σ|pos − cen|² over flock fish,      + school spread
+ *                 Σfear                                + mean fear: the
+ *                                                        director's alarm)
  * Partials live at [2 .. 2+64) and [2+64 .. 2+128).
  *
  * The spread lane is measured about `cen` = the *previous* frame's centroid:
@@ -345,7 +348,7 @@ fn reducePass1(
       let r = d.pe.xyz - cen;
       spread = dot(r, r);
     }
-    accB += vec4f(length(d.vf.xyz), select(0.0, 1.0, s.s1.x >= 0.8), spread, 0.0);
+    accB += vec4f(length(d.vf.xyz), select(0.0, 1.0, s.s1.x >= 0.8), spread, d.vf.w);
     k += 64u * 256u;
   }
   wsumA[lid] = accA;
@@ -532,6 +535,8 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
   let bite = U[16].z;
   let flight = U[16].w;
   let rally = U[17].x;
+  let herd = U[17].y;
+  let herdGain = U[17].z;
   let perception2 = perception * perception;
   let cen = centroid[0].xyz;
 
@@ -928,8 +933,8 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
 
   // ---- Steering forces ----
   var acc = vec3f(0.0);
-  // Set by the rally drive below; lifts the integrate speed cap so the
-  // rush back can outrun cruise speed. Stays 0 at rally 0.
+  // Set by the herd and rally drives below; lifts the integrate speed cap
+  // so the rush in can outrun cruise speed. Stays 0 at herd 0 and rally 0.
   var rallyBoost = 0.0;
   var pairKick = vec3f(0.0);
   let maxSpeed = maxSpeedBase * spdF
@@ -1054,6 +1059,21 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
     var anchor = -h * 0.02;
     if (shape >= 0.001) { anchor = shapeAniso(anchor, head, shape); }
     acc += anchor + reCenter;
+    // Selfish herd: every fish wants deeper into the school. rel² makes
+    // edge fish rush and core fish idle. No arrival damping on purpose:
+    // separation, the fine grid and crowd dim push back, and that standoff
+    // is the pulse. Uniform branch - free at herd 0.
+    if (herd > 0.001) {
+      let hv = cen - pos;
+      let hdc = length(hv);
+      if (hdc > 0.3) {
+        let rel = min(2.0, hdc / max(1.0, containRadius * 0.8));
+        acc += (hv / hdc) * (herd * herdGain * 12.0 * rel * rel);
+      }
+      // An alarm collapse lifts the speed cap so the rush in is visible.
+      // Adds nothing at herdGain 1 (every mood but contract).
+      rallyBoost = max(rallyBoost, 0.5 * herd * (herdGain - 1.0));
+    }
     let rHome = length(h);
     if (rHome > breatheR) {
       let over = rHome - breatheR;
@@ -1177,7 +1197,8 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
     if (rally > 0.001 && hd > 0.5) {
       let drive = regroup * 3.2 * sqrt(fearI) * rally * 1.5;
       acc += (h / hd) * drive;
-      rallyBoost = rally * sqrt(fearI);
+      // max: the herd drive may already have lifted the cap this frame.
+      rallyBoost = max(rallyBoost, rally * sqrt(fearI));
     }
   }
 

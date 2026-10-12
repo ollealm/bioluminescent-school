@@ -337,6 +337,12 @@ export interface SwarmParams {
    * 0 = the reference's isotropic cohesion.
    */
   shape: number;
+  /**
+   * GPU-only. Selfish-herd drive: every fish wants deeper into the school,
+   * edge fish hardest, so the body pulses against its own crowd pressure.
+   * The director swells it during a contraction. 0 = the reference.
+   */
+  herd: number;
 
   // --- Ambient motion ---
   flowStrength: number;
@@ -440,6 +446,7 @@ export const DEFAULT_PARAMS: SwarmParams = {
   gait: 0.8,
   collapse: 0,
   shape: 0,
+  herd: 0,
 
   flowStrength: 0.9,
   flowScale: 0.09,

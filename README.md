@@ -102,6 +102,17 @@ comparing full parameter sets live:
   `rally-storm` (1.0 / 5 / 2.5 / 0.8: tears into lobes and voids for two
   seconds, then reassembles). Full rally with slow decay (1.0 / 5 / 1.5)
   implodes into one bright ball and was rejected.
+- `herd` + the alarm collapse (round six, owner: "real schools all seek
+  the center; the regroup should collapse in on itself and be more violent
+  all the time"): the selfish-herd drive pulls every flocking fish toward
+  the centroid with strength ∝ (r/R)² and no arrival damping, so edge fish
+  rush in and the body pulses against its own crowd pressure; and the
+  director now reads the school's mean fear (reduced on-GPU) and, when a
+  scare subsides, triggers a hard contraction (cohesion 1 + 1.4·collapse,
+  herd gain 1 + 2.5·collapse, 4 s cooldown) so the whole school implodes on
+  return, not only the fish that fled. olle-work = rally-tight + herd 0.4
+  + collapse 1.0. At herd 0.5 the resting school became a hard-edged ball
+  and a startle implosion ran 3% hot.
 - **Visual review** - `await __sweep()` (standard predator pass: the cursor
   enters from the left, crosses into the school, parks, leaves) and
   `await __filmstrip({ frames, intervalMs, path, click })` return one

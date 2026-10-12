@@ -55,6 +55,7 @@ const GROUPS: Group[] = [
       { key: "gait", label: "Gait", min: 0, max: 2, step: 0.05, impact: 2, hint: "Burst-and-glide swimming — thrust impulses, then coasting" },
       { key: "collapse", label: "Collapse", min: 0, max: 2, step: 0.05, impact: 3, hint: "How often and how hard the school contracts in on itself, then releases" },
       { key: "shape", label: "Body shape", min: 0, max: 1, step: 0.01, impact: 2, hint: "Stretch the school along its heading - a traveling shoal instead of a ball" },
+      { key: "herd", label: "Herd", min: 0, max: 1, step: 0.01, impact: 3, hint: "Selfish-herd drive - every fish wants deeper into the school; edge fish rush in and the body pulses against its own crowd pressure" },
     ],
   },
   {
@@ -764,7 +765,7 @@ export class DevPanel {
 }
 
 /** Params only the GPU kernel implements (added after the v3 port). */
-const GPU_ONLY_KEYS = new Set<string>(["collapse", "shape", "bite", "flight", "rally", "crowdDim", "accentShare"]);
+const GPU_ONLY_KEYS = new Set<string>(["collapse", "shape", "herd", "bite", "flight", "rally", "crowdDim", "accentShare"]);
 
 function el(tag: string, cls: string, text?: string): HTMLElement {
   const node = document.createElement(tag);

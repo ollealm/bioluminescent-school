@@ -169,6 +169,8 @@ export class GpuSwarm implements SwarmSystem {
   /** GPU-reduced stats, 1–2 frames stale (readback ring). */
   private meanSpeed = 0;
   private hotGlowCount = 0;
+  /** Mean per-fish fear (readback): the director's alarm signal. */
+  private meanFear = 0;
   /**
    * RMS distance of flock fish from the centroid (readback, ~2 frames
    * stale). Seeded with a uniform ball of 0.8 × tank (RMS = R·√(3/5)) until
@@ -211,12 +213,25 @@ export class GpuSwarm implements SwarmSystem {
   private dirSpeed = 0.6;
   /** Separation gain (GPU-only): dips while contracting, pops on release. */
   private dirSep = 1;
+  /** Herd-drive gain (GPU-only): swells while contracting, 1 otherwise. */
+  private dirHerd = 1;
   private tgtAlign = 1;
   private tgtCoh = 1;
   private tgtMill = 0;
   private tgtDrive = 1;
   private tgtSpeed = 0.6;
   private tgtSep = 1;
+  private tgtHerd = 1;
+
+  // Alarm-triggered collapse (GPU-only, the `collapse` lever): a scare
+  // that subsides pulls the whole school into a bait ball.
+  /** meanFear smoothed over ~0.15 s. */
+  private alarm = 0;
+  /** Running max of alarm, decaying back toward it at 1/s. */
+  private alarmPeak = 0;
+  private alarmCooldown = 0;
+  /** Set right before enterMood(M_CONTRACT) to pick the harder contraction. */
+  private contractFromAlarm = false;
 
   constructor(device: GPUDevice, aspect: number, count: number) {
     this.device = device;
@@ -247,10 +262,15 @@ export class GpuSwarm implements SwarmSystem {
 
   /**
    * GPU-reduced frame stats (mean |vel|, count of glow ≥ 0.8, school RMS
-   * radius); ~2 frames stale.
+   * radius, mean fear); ~2 frames stale.
    */
-  stats(): { meanSpeed: number; hotGlow: number; rmsRadius: number } {
-    return { meanSpeed: this.meanSpeed, hotGlow: this.hotGlowCount, rmsRadius: this.rmsRadius };
+  stats(): { meanSpeed: number; hotGlow: number; rmsRadius: number; meanFear: number } {
+    return {
+      meanSpeed: this.meanSpeed,
+      hotGlow: this.hotGlowCount,
+      rmsRadius: this.rmsRadius,
+      meanFear: this.meanFear,
+    };
   }
 
   /**
@@ -395,6 +415,7 @@ export class GpuSwarm implements SwarmSystem {
       this.centroid = { x: 0, y: 0, z: 0 };
       this.flockN = count;
       this.rmsRadius = this.nominalRmsRadius();
+      this.meanFear = 0;
       return;
     }
     this.destroyBuffers();
@@ -446,6 +467,7 @@ export class GpuSwarm implements SwarmSystem {
     this.centroid = { x: 0, y: 0, z: 0 };
     this.flockN = count;
     this.rmsRadius = this.nominalRmsRadius();
+    this.meanFear = 0;
     this.generation++;
   }
 
@@ -791,8 +813,9 @@ export class GpuSwarm implements SwarmSystem {
     const prev = this.mood;
     this.mood = mood;
     // Personal space is the reference's everywhere except the contraction
-    // and the turn that releases it.
+    // and the turn that releases it; the herd gain idles outside contract.
     this.tgtSep = 1;
+    this.tgtHerd = 1;
 
     switch (mood) {
       case M_CRUISE:
@@ -856,13 +879,24 @@ export class GpuSwarm implements SwarmSystem {
         // and settled onto the grid lattice. Cohesion alone condenses; the
         // arrival damping (HANDOFF §4.1) bounds the squeeze.
         const c = P.collapse;
-        this.moodTimer = (2.2 + Math.random() * 1.8) / tempo;
         this.tgtAlign = 0.7;
-        this.tgtCoh = 1.0 + 0.9 * c;
         this.tgtMill = 0.25;
         this.tgtDrive = 0.25;
-        this.tgtSpeed = 0.35;
         this.tgtSep = 1;
+        if (this.contractFromAlarm) {
+          // After a scare the whole school balls up, not just the fish that
+          // fled: shorter, harder, and the herd drive surges.
+          this.contractFromAlarm = false;
+          this.moodTimer = (1.6 + Math.random() * 1.0) / tempo;
+          this.tgtCoh = 1.0 + 1.4 * c;
+          this.tgtSpeed = 0.45;
+          this.tgtHerd = 1 + 2.5 * c;
+        } else {
+          this.moodTimer = (2.2 + Math.random() * 1.8) / tempo;
+          this.tgtCoh = 1.0 + 0.9 * c;
+          this.tgtSpeed = 0.35;
+          this.tgtHerd = 1 + 1.2 * c;
+        }
         break;
       }
     }
@@ -928,6 +962,27 @@ export class GpuSwarm implements SwarmSystem {
       this.enterMood(this.mood === M_STARTLE ? M_CRUISE : this.pickNextMood());
     }
 
+    // Alarm collapse: once a real scare subsides (alarm under half its
+    // recent peak), the school collapses in on itself. Unreachable at
+    // collapse 0, so the reference FSM stays untouched.
+    this.alarm += (this.meanFear - this.alarm) * (1 - Math.exp(-dt / 0.15));
+    this.alarmPeak += (this.alarm - this.alarmPeak) * (1 - Math.exp(-dt));
+    if (this.alarm > this.alarmPeak) this.alarmPeak = this.alarm;
+    this.alarmCooldown -= dt;
+    if (
+      P.collapse > 0 &&
+      this.alarmPeak > 0.08 &&
+      this.alarm < 0.5 * this.alarmPeak &&
+      this.mood !== M_CONTRACT &&
+      this.mood !== M_STARTLE &&
+      this.alarmCooldown <= 0
+    ) {
+      this.contractFromAlarm = true;
+      this.enterMood(M_CONTRACT);
+      this.alarmPeak = this.alarm;
+      this.alarmCooldown = 4;
+    }
+
     // Bend the heading toward home when the school strays.
     const hx = homeX - this.centroid.x;
     const hy = homeY - this.centroid.y;
@@ -955,6 +1010,8 @@ export class GpuSwarm implements SwarmSystem {
     // Snap home so an idle lever leaves the kernel's separation at exactly
     // the user's weight (the ease alone only approaches 1 asymptotically).
     if (Math.abs(this.tgtSep - this.dirSep) < 1e-4) this.dirSep = this.tgtSep;
+    this.dirHerd += (this.tgtHerd - this.dirHerd) * k;
+    if (Math.abs(this.tgtHerd - this.dirHerd) < 1e-4) this.dirHerd = this.tgtHerd;
   }
 
   // ------------------------------------------------------------------
@@ -1141,6 +1198,8 @@ export class GpuSwarm implements SwarmSystem {
     U[66] = Math.min(0.9, Math.max(0, P.bite ?? 0));
     U[67] = P.flight ?? 0;
     U[68] = P.rally ?? 0;
+    U[69] = P.herd ?? 0;
+    U[70] = this.dirHerd;
 
     // ---- Pack events ----
     const batch = this.pending.splice(0, MAX_EVENTS);
@@ -1219,6 +1278,8 @@ export class GpuSwarm implements SwarmSystem {
           this.hotGlowCount = v[5];
           // [1].z = Σ|pos − cen|² over flock fish (see WGSL_REDUCE).
           this.rmsRadius = Math.sqrt(Math.max(0, v[6]) / Math.max(1, v[3]));
+          // [1].w = Σfear over active fish.
+          this.meanFear = v[7] / Math.max(1, this.count);
           st.buf.unmap();
           st.state = "free";
         })
