@@ -27,7 +27,7 @@ import { GPU_TUNING, TUNING } from "../params";
  *   U[13] kx, ky, kz, swirl
  *   U[14] jitter, wanderPull, returnPull, repelForce
  *   U[15] fleeForce, regroup, containRadius, gait
- *   U[16] dirSep, shape, bite, 0        (lifelike levers; 1, 0, 0 = v3 kernel)
+ *   U[16] dirSep, shape, bite, flight   (lifelike levers; 1, 0, 0, 0 = v3 kernel)
  */
 
 /** Uniform array length in vec4s (80 floats). Shared with GpuSwarm.ts. */
@@ -529,6 +529,7 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
   let dirSep = U[16].x;
   let shape = U[16].y;
   let bite = U[16].z;
+  let flight = U[16].w;
   let perception2 = perception * perception;
   let cen = centroid[0].xyz;
 
@@ -907,8 +908,15 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
     fearFall = 1.0 - smoothstep(bite, 1.0, uS);
   }
 
+  // Flight: fear above 1 - flight keeps a fish bolting even outside the
+  // threat band, so a small danger zone sends hit fish (and the neighbors
+  // panic spread infects) streaming out of the school before regrouping.
+  // Needs the pointer for its direction; without one, fish regroup as before.
+  // Contact fear lands later, but only inside threatNear, where this is moot.
+  let inFlight = flight > 0.001 && pointerOn && fearI > (1.0 - flight);
+
   // After a strike, far-flung survivors commit to returning.
-  if (mode == FLOCK && fearI > 0.12 && !threatNear) {
+  if (mode == FLOCK && fearI > 0.12 && !threatNear && !inFlight) {
     let h = pos - cen;
     if (dot(h, h) > breatheR * breatheR * 0.72) {
       mode = RETURN_;
@@ -976,7 +984,9 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
         let arrive = maxSpeed * min(1.0, tl / arriveR);
         t = clampLen((t / tl) * arrive - vel, MAX_FORCE);
         var cw = cohesionW * dirCoh * social;
-        if (threatNear && fearI > 0.01) {
+        // In flight, cohesion yields as it does near the threat, so the
+        // school doesn't reel the bolting fish straight back in.
+        if ((threatNear && fearI > 0.01) || inFlight) {
           cw *= 1.0 - fearI * 0.6;
         } else if (fearI > 0.08) {
           // Threat gone: fear flips into an urgent regroup drive.
@@ -1134,12 +1144,22 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
         (pd.z / pdist) * flee * 0.35,
       );
     }
+    // In flight past the threat band: keep bolting, weaker at low flight
+    // so the carry-out grows with the slider instead of switching on.
+    if (inFlight && !threatNear) {
+      let flee = fleeForce * fearI * (0.35 + 0.65 * flight);
+      acc += vec3f(
+        (pd.x / pdist) * flee,
+        (pd.y / pdist) * flee,
+        (pd.z / pdist) * flee * 0.35,
+      );
+    }
   }
 
   // Regroup urgency: still afraid but the threat is out of range — swim
   // straight back to the shoal. Only outside the shoal body, so the center
-  // doesn't clump.
-  if (fearI > 0.02 && !threatNear) {
+  // doesn't clump. Waits until flight has burned off.
+  if (fearI > 0.02 && !threatNear && !inFlight) {
     let h = cen - pos;
     let hd = length(h);
     if (hd > containRadius * 0.75) {

@@ -50,6 +50,7 @@ export const MOTION_KEYS: (keyof SwarmParams)[] = [
 export const REACTION_KEYS: (keyof SwarmParams)[] = [
   "mouseRadius",
   "bite",
+  "flight",
   "repelForce",
   "splash",
   "fleeForce",

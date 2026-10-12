@@ -92,6 +92,7 @@ const GROUPS: Group[] = [
     sliders: [
       { key: "mouseRadius", label: "Radius", min: 1, max: 12, step: 0.1, impact: 3, hint: "Size of the danger zone around the cursor" },
       { key: "bite", label: "Bite", min: 0, max: 0.9, step: 0.01, impact: 3, hint: "How crisp the danger zone's edge is - 0 = soft gravity-like falloff, high = nothing until close, then full bolt" },
+      { key: "flight", label: "Flight", min: 0, max: 1, step: 0.01, impact: 3, hint: "How far fear carries a fish out of the school before it regroups - with panic spread, the hit fish take neighbors with them" },
       { key: "repelForce", label: "Repel force", min: 0, max: 90, step: 1, impact: 3, hint: "Escape steering strength inside the danger zone" },
       { key: "regroup", label: "Regroup drive", min: 0, max: 4, step: 0.05, impact: 3, hint: "Post-threat urge to rush back to the school" },
       { key: "fleeForce", label: "Flee force", min: 0, max: 80, step: 1, impact: 2, hint: "Extra push while frightened and the threat is still close" },
@@ -698,7 +699,7 @@ export class DevPanel {
 }
 
 /** Params only the GPU kernel implements (added after the v3 port). */
-const GPU_ONLY_KEYS = new Set<string>(["collapse", "shape", "bite", "crowdDim"]);
+const GPU_ONLY_KEYS = new Set<string>(["collapse", "shape", "bite", "flight", "crowdDim"]);
 
 function el(tag: string, cls: string, text?: string): HTMLElement {
   const node = document.createElement(tag);

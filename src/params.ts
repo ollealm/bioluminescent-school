@@ -365,6 +365,12 @@ export interface SwarmParams {
    * close, then a full-strength bolt (a predator, not a well).
    */
   bite: number;
+  /**
+   * GPU-only. How far fear carries a fish out of the school before it
+   * regroups: fear above 1 - flight keeps it fleeing past the threat band,
+   * so with panic spread the hit fish take neighbors with them. 0 = v3.
+   */
+  flight: number;
   repelForce: number;
   splash: number;
   /** How hard frightened particles keep swimming away from the cursor. */
@@ -439,6 +445,7 @@ export const DEFAULT_PARAMS: SwarmParams = {
 
   mouseRadius: 6.5,
   bite: 0,
+  flight: 0,
   repelForce: 38,
   splash: 1.0,
   fleeForce: 30,

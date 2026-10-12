@@ -60,6 +60,18 @@ comparing full parameter sets live:
     additively into one glowing spot while the resting body keeps its
     brightness. A box count was tried first and banded along the grid
     planes; the tent kernel is position-continuous.
+- `flight` (round four, owner: "keep the small area around the cursor but
+  make the reaction much stronger, so hit fish leave the school and take
+  others with them, with a dynamic delay"): a fish whose fear exceeds
+  1 − flight keeps bolting away from the cursor *outside* the threat band
+  instead of flipping into regroup, and the regroup surge, the
+  commit-to-return and the post-strike homing all wait until its fear has
+  decayed. With panic spread the wave reaches neighbors hop by hop
+  (0.92× per hop), so flight sets the reach in hops and fearSpread sets
+  the delay. olle-work: flight 0.55, spread 1.2, decay 1.0, repel 90,
+  flee 60. Spontaneous light was made subtle at the same time (spontaneous
+  0.2, flashBrightness 0.55, kick 1.6; transmission stays 2.8 because at 2.2
+  click cascades no longer grew and smoldered past the 5 s bar).
 - **Visual review** - `await __sweep()` (standard predator pass: the cursor
   enters from the left, crosses into the school, parks, leaves) and
   `await __filmstrip({ frames, intervalMs, path, click })` return one
