@@ -457,6 +457,10 @@ with two cascades (CPU 2,500 vs GPU 25k), near-white stayed ≤ 0.005% at
 0.6 and at 0.5 (before the tonemap: 0.05–0.10%). Hot pixels (max channel
 ≥ 0.92) ran 0.08–0.14% at 0.6 against the GPU's 0.05%, but in the flash's
 own hue. 0.6 reads closest to the GPU's brightness; 0.5 read faint.
+The crowd-dim grid now spans the fine grid's screen-wide extent at the
+panel's lowest perception (1.2). Fish outside it keep full brightness;
+the old 48³ cube clamped them into its edge cells, and a group crossing
+x ≈ ±14.4 dimmed to 0.4×.
 
 ## 4. Measurements
 

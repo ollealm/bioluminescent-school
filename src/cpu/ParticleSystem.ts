@@ -96,9 +96,16 @@ const F_INV = 1 / GPU_TUNING.fineCellSize;
 
 // Crowd-dim density grid: counts only, cells of half a perception radius.
 // The flocking scan stops at 16 neighbors, so it can't tell a crowded core
-// from a merely full one; this grid can, for a few lookups per fish.
-const CD = 48;
-const CD2 = CD * CD;
+// from a merely full one; this grid can, for a few lookups per fish. It
+// spans the fine grid's screen-wide extent at the panel's lowest perception
+// (1.2; a wider perception only widens it), and a fish outside is neither
+// counted nor dimmed: a 48³ cube clamped fish into its edge cells, and a
+// wander group crossing x ≈ ±14.4 at perception 1.2 dimmed to 0.3×.
+const CROWD_CELL_MIN = 1.2 * 0.5;
+const CX = Math.round((FX * GPU_TUNING.fineCellSize) / CROWD_CELL_MIN); // 108
+const CY = Math.round((FY * GPU_TUNING.fineCellSize) / CROWD_CELL_MIN); // 72
+const CZ = Math.round((FZ * GPU_TUNING.fineCellSize) / CROWD_CELL_MIN); // 48
+const CXY = CX * CY;
 
 function smoothstep(e0: number, e1: number, x: number): number {
   const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0)));
@@ -303,7 +310,7 @@ export class ParticleSystem implements SwarmSystem {
   private fineTouchedN = 0;
 
   // Crowd dim (counts only; cleared through the touched list like the grids)
-  private crowdCount = new Int32Array(CD * CD * CD);
+  private crowdCount = new Int32Array(CXY * CZ);
   private crowdTouched!: Int32Array;
   private crowdTouchedN = 0;
   /** Smoothed mean local count over the school; -1 = not measured yet. */
@@ -859,9 +866,18 @@ export class ParticleSystem implements SwarmSystem {
       this.rebuild(count);
       return;
     }
-    if (count > this.count) this.reviveRange(this.count, count);
+    const grow = count > this.count;
+    if (grow) this.reviveRange(this.count, count);
     this.count = count;
     this.geometry.setDrawRange(0, count);
+    // Upload the woken fish now: a paused school (timeScale 0) returns from
+    // update() before it queues them, and they'd draw where they slept.
+    if (grow) {
+      const attrs = this.geometry.attributes;
+      for (const name of ["position", "aVel", "aEnergy", "aGlow", "aFade"]) {
+        this.markLive(attrs[name] as THREE.BufferAttribute);
+      }
+    }
   }
 
   /**
@@ -1647,7 +1663,8 @@ export class ParticleSystem implements SwarmSystem {
    * planes: each cell's count is weighted by a separable tent of its
    * center's offset from the fish (in cells, w = 0 at |d| = 1.5), the same
    * stencil as the GPU sprite shader, so a face crossing swaps slabs at
-   * zero weight.
+   * zero weight. Fish outside the grid keep full brightness and stay out
+   * of the mean.
    */
   private updateCrowdFade(dt: number): void {
     const dim = this.params.crowdDim ?? 0;
@@ -1669,47 +1686,55 @@ export class ParticleSystem implements SwarmSystem {
     const n = this.count;
     const pos = this.pos;
     const inv = 1 / (Math.max(0.5, this.params.perception) * 0.5);
-    const half = CD >> 1;
+    const hx = CX >> 1;
+    const hy = CY >> 1;
+    const hz = CZ >> 1;
     const counts = this.crowdCount;
     const touched = this.crowdTouched;
     for (let k = 0; k < this.crowdTouchedN; k++) counts[touched[k]] = 0;
     let tn = 0;
-    const coord = (v: number): number => {
-      const c = Math.floor(v * inv) + half;
-      return c < 0 ? 0 : c >= CD ? CD - 1 : c;
-    };
     for (let i = 0; i < n; i++) {
-      const c = coord(pos[i * 3]) + coord(pos[i * 3 + 1]) * CD + coord(pos[i * 3 + 2]) * CD2;
+      const cx = Math.floor(pos[i * 3] * inv) + hx;
+      const cy = Math.floor(pos[i * 3 + 1] * inv) + hy;
+      const cz = Math.floor(pos[i * 3 + 2] * inv) + hz;
+      if (cx < 0 || cx >= CX || cy < 0 || cy >= CY || cz < 0 || cz >= CZ) continue;
+      const c = cx + cy * CX + cz * CXY;
       if (counts[c]++ === 0) touched[tn++] = c;
     }
     this.crowdTouchedN = tn;
 
-    // Pass 1: nLocal into fade (as scratch) and the school's mean.
+    // Pass 1: nLocal into fade (as scratch, -1 = outside the grid) and the
+    // school's mean.
     let sum = 0;
+    let inGrid = 0;
     for (let i = 0; i < n; i++) {
-      const gx = pos[i * 3] * inv + half;
-      const gy = pos[i * 3 + 1] * inv + half;
-      const gz = pos[i * 3 + 2] * inv + half;
-      const fx = coord(pos[i * 3]);
-      const fy = coord(pos[i * 3 + 1]);
-      const fz = coord(pos[i * 3 + 2]);
-      const rx = Math.max(0, Math.min(1, gx - fx));
-      const ry = Math.max(0, Math.min(1, gy - fy));
-      const rz = Math.max(0, Math.min(1, gz - fz));
+      const gx = pos[i * 3] * inv + hx;
+      const gy = pos[i * 3 + 1] * inv + hy;
+      const gz = pos[i * 3 + 2] * inv + hz;
+      const fx = Math.floor(gx);
+      const fy = Math.floor(gy);
+      const fz = Math.floor(gz);
+      if (fx < 0 || fx >= CX || fy < 0 || fy >= CY || fz < 0 || fz >= CZ) {
+        fade[i] = -1;
+        continue;
+      }
+      const rx = gx - fx;
+      const ry = gy - fy;
+      const rz = gz - fz;
       let wSum = 0;
       let nSum = 0;
       for (let oz = -1; oz <= 1; oz++) {
         const cz = fz + oz;
-        if (cz < 0 || cz >= CD) continue;
+        if (cz < 0 || cz >= CZ) continue;
         const wz = Math.max(0, 1 - Math.abs(oz + 0.5 - rz) / 1.5);
         for (let oy = -1; oy <= 1; oy++) {
           const cy = fy + oy;
-          if (cy < 0 || cy >= CD) continue;
+          if (cy < 0 || cy >= CY) continue;
           const wzy = wz * Math.max(0, 1 - Math.abs(oy + 0.5 - ry) / 1.5);
-          const row = cy * CD + cz * CD2;
+          const row = cy * CX + cz * CXY;
           for (let ox = -1; ox <= 1; ox++) {
             const cx = fx + ox;
-            if (cx < 0 || cx >= CD) continue;
+            if (cx < 0 || cx >= CX) continue;
             const w = wzy * Math.max(0, 1 - Math.abs(ox + 0.5 - rx) / 1.5);
             nSum += w * counts[cx + row];
             wSum += w;
@@ -1719,16 +1744,17 @@ export class ParticleSystem implements SwarmSystem {
       const nLocal = (nSum / Math.max(wSum, 1e-6)) * 27;
       fade[i] = nLocal;
       sum += nLocal;
+      inGrid++;
     }
     // One-pole smoothed (0.5 s) so the reference never flickers.
-    const nRefNow = sum / Math.max(1, n);
+    const nRefNow = sum / Math.max(1, inGrid);
     this.nRef = this.nRef < 0 ? nRefNow : this.nRef + (nRefNow - this.nRef) * (1 - Math.exp(-dt / 0.5));
 
     // Pass 2: the fade itself. Sparse fish are never boosted.
     const k = 0.8 * dim;
     const nRef = this.nRef;
     for (let i = 0; i < n; i++) {
-      fade[i] = Math.pow(Math.min(1, nRef / Math.max(fade[i], 1)), k);
+      fade[i] = fade[i] < 0 ? 1 : Math.pow(Math.min(1, nRef / Math.max(fade[i], 1)), k);
     }
     this.markLive(attr);
   }
