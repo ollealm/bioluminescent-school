@@ -215,6 +215,7 @@ export class GpuRenderer {
     this.nRef = this.nRef < 0 ? nRefNow : this.nRef + (nRefNow - this.nRef) * (1 - Math.exp(-dt / 0.5));
     R[32] = this.nRef;
     R[33] = P.crowdDim ?? 0;
+    R[34] = P.flashSize ?? 0.45;
     this.device.queue.writeBuffer(this.uniformsB, 0, R);
 
     const enc = this.device.createCommandEncoder({ label: "render" });

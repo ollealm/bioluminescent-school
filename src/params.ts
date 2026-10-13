@@ -450,6 +450,11 @@ export interface SwarmParams {
   /** Velocity stretching: fast particles render as streaks, not dots. */
   stretch: number;
   /**
+   * How much a lit (cascade) fish grows: sprite size × (1 + energy ×
+   * flashSize). v3 hard-coded 0.45; 0 = light only, no swelling. GPU only.
+   */
+  flashSize: number;
+  /**
    * Crowd dim (GPU only, 0..1): fish in cores denser than the nominal
    * school fade by (nominal / local)^(0.8 * crowdDim), so additive pile-ups
    * read as a denser school rather than one blown-out glowing spot. 0 = off
@@ -524,6 +529,7 @@ export const DEFAULT_PARAMS: SwarmParams = {
   twinkle: 0.55,
   motionGlow: 0.9,
   stretch: 1.3,
+  flashSize: 0.45,
   crowdDim: 0,
   accentShare: 0.05,
 };

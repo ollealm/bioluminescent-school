@@ -131,6 +131,7 @@ const GROUPS: Group[] = [
       { key: "opacity", label: "Opacity", min: 0.1, max: 1, step: 0.01, impact: 3, hint: "Overall brightness / translucency" },
       { key: "motionGlow", label: "Motion glow", min: 0, max: 2, step: 0.05, impact: 2, hint: "Shear-triggered light — agitated particles glow" },
       { key: "stretch", label: "Stretch", min: 0, max: 3, step: 0.05, impact: 2, hint: "Fast particles render as streaks along their motion" },
+      { key: "flashSize", label: "Flash size", min: 0, max: 1, step: 0.01, impact: 1, hint: "How much a lit fish swells during a cascade (0 = light only)" },
       { key: "crowdDim", label: "Crowd dim", min: 0, max: 1, step: 0.01, impact: 2, hint: "Dim fish in dense cores so pile-ups don't blow out into one glowing spot" },
       { key: "twinkle", label: "Twinkle", min: 0, max: 1, step: 0.01, impact: 1, hint: "Slow individual brightness oscillation" },
       { key: "accentShare", label: "Accent share", min: 0, max: 0.2, step: 0.005, impact: 1, hint: "Fraction of fish in the palette's accent color - 0 removes them" },
@@ -864,7 +865,7 @@ export class DevPanel {
 }
 
 /** Params only the GPU kernel implements (added after the v3 port). */
-const GPU_ONLY_KEYS = new Set<string>(["roamDepth", "collapse", "shape", "herd", "shiver", "sheet", "bite", "flight", "rally", "evade", "crowdDim", "accentShare"]);
+const GPU_ONLY_KEYS = new Set<string>(["flashSize", "roamDepth", "collapse", "shape", "herd", "shiver", "sheet", "bite", "flight", "rally", "evade", "crowdDim", "accentShare"]);
 
 function el(tag: string, cls: string, text?: string): HTMLElement {
   const node = document.createElement(tag);

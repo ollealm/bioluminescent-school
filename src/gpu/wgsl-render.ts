@@ -14,7 +14,7 @@
  *   b      size (density-compensated), opacity (compensated), flashBright, twinkle
  *   c      stretch, motionGlow, style, tonemapKnee
  *   flash  flash color rgb, camera z
- *   crowd  nRef (expected 27-fine-cell count at the school's live mean density), crowdDim, 0, 0
+ *   crowd  nRef (expected 27-fine-cell count at the school's live mean density), crowdDim, flashSize, 0
  */
 import { GPU_TUNING } from "../params";
 
@@ -103,7 +103,7 @@ fn vsSprite(
   if (sp > 0.001) { dir = vel.xy / sp; }
 
   let depth = R.flash.w - pos.z; // -viewZ; camera looks down -z from camZ
-  var sizePx = st.colorSize.w * R.b.x * (1.0 + energy * 0.45)
+  var sizePx = st.colorSize.w * R.b.x * (1.0 + energy * R.crowd.z)
     * (0.72 + 0.28 * tw) * R.a.z * (340.0 / max(depth, 0.1)) * stretch;
   if (depth < 0.1) { sizePx = 0.0; } // behind the camera: collapse
 
