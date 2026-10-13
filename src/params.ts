@@ -63,8 +63,17 @@ export const GPU_TUNING = {
    * to ~1 in the size²·opacity product; size takes the larger share so 50k
    * reads as *finer grain*, not just dimmer motes.
    */
-  sizeCompExp: 0.35,
-  opacityCompExp: 0.3,
+  sizeCompExp: 0,
+  opacityCompExp: 0,
+  /**
+   * Both exponents are 0 since 2026-10-13: the owner retired the
+   * compensation. In practice it made Size and Opacity mean different
+   * things at every count (a phone at 12k drew bigger, brighter sprites
+   * than a desktop at 25k, which read as blur), and the CPU engine never
+   * had it, so its values were tuned by hand anyway. Sliders are now
+   * literal at any count; a feel's `cpu` block carries per-backend values.
+   * The machinery stays for experiments.
+   */
   /** Compensation is clamped so tiny counts don't blow up (≤ this factor). */
   maxComp: 2.0,
   /**
