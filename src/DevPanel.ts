@@ -202,7 +202,7 @@ const CSS = `
 }
 .blm-panel summary::before { content: "▸ "; color: rgba(96,255,178,.5); }
 .blm-panel details[open] summary::before { content: "▾ "; }
-.blm-selects { display: grid; grid-template-columns: 1fr 1fr auto; gap: 6px; margin: 4px 0 2px; }
+.blm-selects { display: grid; grid-template-columns: 1fr 1fr auto auto; gap: 6px; margin: 4px 0 2px; }
 .blm-select-wrap { display: flex; flex-direction: column; gap: 3px; }
 .blm-select-wrap span { font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: rgba(140,230,190,.5); }
 .blm-panel select {
@@ -276,6 +276,8 @@ export class DevPanel {
   private paletteSel!: HTMLSelectElement;
   private accentInput!: HTMLInputElement;
   private accentReset!: HTMLButtonElement;
+  private baseInput!: HTMLInputElement;
+  private baseReset!: HTMLButtonElement;
   private countInput!: HTMLInputElement;
   private countOut!: HTMLOutputElement;
   private rebuildTimer: number | undefined;
@@ -502,14 +504,16 @@ export class DevPanel {
         Object.entries(PALETTES).map(([k, p]) => [k, p.label]),
         (v) => {
           sys.setPalette(v as PaletteName);
-          // Without an override the picker follows the new palette's accent.
+          // Without an override each picker follows the new palette.
           this.syncAccent();
+          this.syncBase();
           this.save();
         },
         (sel) => (this.paletteSel = sel),
         "Color scheme — also sets the flash hue",
       ),
     );
+    selects.appendChild(this.makeBasePicker());
     selects.appendChild(this.makeAccentPicker());
     root.appendChild(selects);
 
@@ -589,6 +593,7 @@ export class DevPanel {
         Object.assign(sys.params, DEFAULT_PARAMS);
         sys.setPalette("emerald");
         sys.setAccent?.(null);
+        sys.setBase?.(null);
         sys.setStyle("glow");
         for (const [cat, name] of Object.entries(DEFAULT_PRESETS)) {
           sys.applyPreset(cat as PresetCategory, name);
@@ -736,6 +741,48 @@ export class DevPanel {
     this.accentReset.disabled = override === null;
   }
 
+  /** Base school color: a native picker plus a reset to the palette's own. */
+  private makeBasePicker(): HTMLElement {
+    const sys = this.system;
+    const wrap = el("div", "blm-select-wrap");
+    wrap.appendChild(el("span", "", "Base"));
+    const row = el("div", "blm-accent");
+    this.baseInput = document.createElement("input");
+    this.baseInput.type = "color";
+    this.baseReset = el("button", "blm-accent-reset", "↺") as HTMLButtonElement;
+    this.baseReset.title = "Back to the palette's own colors";
+    if (sys.setBase) {
+      wrap.title = "Main school color - the gradient and flash hue are derived from it";
+      this.baseInput.addEventListener("input", () => {
+        sys.setBase?.(this.baseInput.value);
+        // Not syncBase: rewriting the value mid-drag would fight the picker.
+        this.baseReset.disabled = false;
+        this.save();
+      });
+      this.baseReset.addEventListener("click", () => {
+        sys.setBase?.(null);
+        this.syncBase();
+        this.save();
+      });
+    } else {
+      // The CPU fallback is the untouched v3 reference: palette colors only.
+      wrap.title = "GPU only - the CPU fallback keeps the palette's colors";
+      this.baseInput.disabled = true;
+    }
+    row.appendChild(this.baseInput);
+    row.appendChild(this.baseReset);
+    wrap.appendChild(row);
+    return wrap;
+  }
+
+  /** Show the override, else the palette's body color; reset only when overridden. */
+  private syncBase(): void {
+    const override = this.system.baseColor ?? null;
+    // stops[2] is what a base override reproduces exactly, so it's the honest default.
+    this.baseInput.value = override ?? PALETTES[this.system.paletteName].stops[2];
+    this.baseReset.disabled = override === null;
+  }
+
   private makeAction(
     label: string,
     fn: (btn: HTMLButtonElement) => void,
@@ -765,6 +812,7 @@ export class DevPanel {
     this.styleSel.value = sys.styleName;
     this.paletteSel.value = sys.paletteName;
     this.syncAccent();
+    this.syncBase();
     this.countInput.value = String(sys.getCount());
     this.countOut.textContent = String(sys.getCount());
   }

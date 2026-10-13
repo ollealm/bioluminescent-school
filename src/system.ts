@@ -38,6 +38,13 @@ export interface SwarmSystem {
   readonly accentColor?: string | null;
   /** Override the palette's accent color; null restores the palette's own. */
   setAccent?(hex: string | null): void;
+  /**
+   * Base color override ("#rrggbb"), null = the palette's own gradient.
+   * Optional for the same reason as the accent: GPU only.
+   */
+  readonly baseColor?: string | null;
+  /** Derive the gradient from one color; null restores the palette's stops. */
+  setBase?(hex: string | null): void;
   getSnapshot(): Snapshot;
   applySnapshot(s: Partial<Snapshot>): void;
   /** Recreate all particle state for a new count. Params are untouched. */
@@ -91,4 +98,9 @@ export interface Snapshot {
    * and older snapshots stay valid at version 3.
    */
   accent?: string | null;
+  /**
+   * Base color override ("#rrggbb"), GPU only: the school's gradient and
+   * flash hue are derived from it. Same omit/absent/null rules as accent.
+   */
+  base?: string | null;
 }

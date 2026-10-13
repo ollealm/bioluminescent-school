@@ -151,6 +151,8 @@ export class GpuSwarm implements SwarmSystem {
   private staticsHost!: Float32Array;
   /** Accent override ("#rrggbb"); null = the palette's own accent. */
   private _accent: string | null = null;
+  /** Base override ("#rrggbb"); null = the palette's own gradient stops. */
+  private _base: string | null = null;
   /** accentShare the colors were last generated with (update() polls it). */
   private lastAccentShare = NaN;
   /** Per-spawn seed so a recolor reuses each fish's draws. */
@@ -372,6 +374,32 @@ export class GpuSwarm implements SwarmSystem {
     this.recolor();
   }
 
+  /** The base override, or null while the palette's own gradient shows. */
+  get baseColor(): string | null {
+    return this._base;
+  }
+
+  /**
+   * Override the palette's gradient with one derived from a base color
+   * ("#rrggbb"); null restores the palette's stops. Malformed input is
+   * ignored rather than clearing.
+   */
+  setBase(hex: string | null): void {
+    if (hex !== null && !/^#[0-9a-f]{6}$/i.test(hex)) return;
+    const next = hex === null ? null : hex.toLowerCase();
+    if (next === this._base) return;
+    this._base = next;
+    this.recolor();
+  }
+
+  /** Flash hue ("#rrggbb"): the palette's, or derived from the base override. */
+  get flashColor(): string {
+    if (!this._base) return PALETTES[this.paletteName].flash;
+    const [h, s, l] = rgbToHsl(hexToRgb(this._base));
+    // Saturated and a touch lighter so flashes read as the same hue, lit.
+    return rgbToHex(hslToRgb(h, Math.min(1, s * 1.1), Math.min(0.85, l + 0.12)));
+  }
+
   setStyle(name: StyleName): void {
     if (!(name in STYLE_IDS)) return;
     this.styleName = name;
@@ -387,6 +415,7 @@ export class GpuSwarm implements SwarmSystem {
       params: { ...this.params },
       // Only when set: a snapshot without one follows the palette.
       ...(this._accent ? { accent: this._accent } : {}),
+      ...(this._base ? { base: this._base } : {}),
     };
   }
 
@@ -403,6 +432,7 @@ export class GpuSwarm implements SwarmSystem {
       }
     }
     if (s.accent !== undefined) this.setAccent(s.accent);
+    if (s.base !== undefined) this.setBase(s.base);
     if (s.palette) this.setPalette(s.palette);
     if (s.style) this.setStyle(s.style);
     if (s.count && s.count !== this.count) this.rebuild(s.count);
@@ -634,7 +664,7 @@ export class GpuSwarm implements SwarmSystem {
    */
   private regenerateColors(): void {
     const palette: Palette = PALETTES[this.paletteName];
-    const stops = palette.stops.map(hexToRgb);
+    const stops = this._base ? baseStops(this._base) : palette.stops.map(hexToRgb);
     const accent = hexToRgb(this._accent ?? palette.accent);
     const share = this.params.accentShare;
     this.lastAccentShare = share;
@@ -1623,6 +1653,47 @@ function mulberry32(seed: number): () => number {
 function hexToRgb(hex: string): [number, number, number] {
   const v = parseInt(hex.slice(1), 16);
   return [((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255];
+}
+
+function rgbToHex(rgb: [number, number, number]): string {
+  return "#" + rgb.map((c) => Math.round(c * 255).toString(16).padStart(2, "0")).join("");
+}
+
+/** rgb in 0..1 → [h 0..1, s, l]. */
+function rgbToHsl([r, g, b]: [number, number, number]): [number, number, number] {
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (d === 0) return [0, 0, l];
+  const s = d / (1 - Math.abs(2 * l - 1));
+  let h: number;
+  if (max === r) h = ((g - b) / d + 6) % 6;
+  else if (max === g) h = (b - r) / d + 2;
+  else h = (r - g) / d + 4;
+  return [h / 6, s, l];
+}
+
+/** [h 0..1, s, l] → rgb in 0..1. */
+function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+  const k = (n: number) => (n + h * 12) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n: number) => l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1));
+  return [f(0), f(8), f(4)];
+}
+
+/**
+ * Four dark → bright stops in the shape of the palettes' own: base sits at
+ * stops[2] (the palette's main body color), the top stop washes out a bit.
+ */
+function baseStops(hex: string): [number, number, number][] {
+  const [h, s, l] = rgbToHsl(hexToRgb(hex));
+  return [
+    hslToRgb(h, s * 0.9, l * 0.45),
+    hslToRgb(h, s, l * 0.8),
+    hslToRgb(h, s, l),
+    hslToRgb(h, s * 0.7, Math.min(0.92, l + 0.3)),
+  ];
 }
 
 export interface GpuApp {

@@ -190,7 +190,8 @@ export class GpuRenderer {
     R[25] = P.motionGlow;
     R[26] = STYLE_IDS[sys.styleName];
     R[27] = GPU_TUNING.tonemapKnee;
-    const flash = PALETTES[sys.paletteName].flash;
+    // The swarm owns the flash hue (a base override retints it).
+    const flash = sys.flashColor ?? PALETTES[sys.paletteName].flash;
     const v = parseInt(flash.slice(1), 16);
     R[28] = ((v >> 16) & 255) / 255;
     R[29] = ((v >> 8) & 255) / 255;
