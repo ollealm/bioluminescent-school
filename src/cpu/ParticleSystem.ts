@@ -44,9 +44,33 @@ const CELLS = D * D * D;
 const MAX_NEIGHBORS = TUNING.maxNeighbors;
 const MAX_FORCE = TUNING.maxForce;
 
+// Stratified neighbor sampling (GPU_TUNING.sampleCandidates): candidates
+// examined per fish, split over the 27 cells by population.
+const SAMPLE_CAND = GPU_TUNING.sampleCandidates;
+// The 27 neighbor-cell offsets, x fastest (the GPU kernel's OFFS order).
+const OFF_X = new Int8Array(27);
+const OFF_Y = new Int8Array(27);
+const OFF_Z = new Int8Array(27);
+for (let k = 0; k < 27; k++) {
+  OFF_X[k] = (k % 3) - 1;
+  OFF_Y[k] = (((k / 3) | 0) % 3) - 1;
+  OFF_Z[k] = ((k / 9) | 0) - 1;
+}
+// Scratch for the fish being stepped: flat cell index per offset (-1 =
+// off-grid), and the reservoir of accepted neighbor indices.
+const nbCell = new Int32Array(27);
+const nbJ = new Int32Array(MAX_NEIGHBORS);
+
+/** PCG hash, u32 in and out: the GPU kernel's `pcg`, bit for bit. */
+function pcg(v: number): number {
+  const s = (Math.imul(v, 747796405) + 2891336453) >>> 0;
+  const w = Math.imul((s >>> ((s >>> 28) + 4)) ^ s, 277803737) >>> 0;
+  return ((w >>> 22) ^ w) >>> 0;
+}
+
 // Fine collision grid (GPU_TUNING.fineGridDim/fineCellSize): close-range
-// personal space, every overlap seen every frame. The flocking scan stops
-// at the first 16 neighbors in cell order; in a dense school those all sit
+// personal space, every overlap seen every frame. v3's flocking scan stopped
+// at the first 16 neighbors in cell order; in a dense school those all sat
 // in one corner cell, separation then pushes every fish the same way (no
 // divergence, so it can't hold pressure) and herd/sheet/contract crushed
 // the school to a 1 u pancake. Same fix and constants as the GPU kernel.
@@ -133,9 +157,11 @@ type Vec3 = { x: number; y: number; z: number };
  * src/gpu/wgsl-sim.ts and GpuSwarm.ts so the fallback feels like the GPU
  * school with fewer fish. Every lever defaults to 0. Also ported: the fine
  * collision grid, because the levers pack the school dense enough that
- * v3's 16-neighbor cap starves separation here too. Not ported: the other
- * compensations for GPU sampling and 20× density (stratified sampling,
- * transmission / fear-spread / refractory scales, predator crowd relief).
+ * v3's 16-neighbor cap starves separation here too, and the GPU's
+ * stratified neighbor sampling, because v3's fixed cell-order scan is a
+ * position-quantized bias that bands the school along the grid planes. Not
+ * ported: the other compensations for 20× density (transmission /
+ * fear-spread / refractory scales, predator crowd relief).
  */
 export class ParticleSystem implements SwarmSystem {
   /** Live-tweakable parameters (the dev panel binds directly to this). */
@@ -182,6 +208,8 @@ export class ParticleSystem implements SwarmSystem {
   private gridCursor = new Int32Array(CELLS);
   private gridEntries!: Int32Array;
   private cellOf!: Int32Array;
+  /** Stepped-frame counter: seeds the per-frame neighbor sampling hash. */
+  private frameNo = 0;
   // Fine collision grid (same counting sort)
   private fineCount = new Int32Array(FCELLS);
   private fineStart = new Int32Array(FCELLS + 1);
@@ -1549,6 +1577,7 @@ export class ParticleSystem implements SwarmSystem {
     const dt = Math.min(deltaTime, 0.05) * P.timeScale;
     if (dt <= 0) return;
     this.time += dt;
+    this.frameNo = (this.frameNo + 1) >>> 0;
 
     const t = this.time;
     const n = this.count;
@@ -1774,6 +1803,9 @@ export class ParticleSystem implements SwarmSystem {
       }
     }
 
+    // Fresh sampling order every frame, so no subset is favored over time.
+    const frameHash = pcg(Math.imul(this.frameNo, 2654435761) >>> 0);
+
     let cSumX = 0;
     let cSumY = 0;
     let cSumZ = 0;
@@ -1817,60 +1849,101 @@ export class ParticleSystem implements SwarmSystem {
       const cx = ParticleSystem.cellCoord(x, invCell);
       const cy = ParticleSystem.cellCoord(y, invCell);
       const cz = ParticleSystem.cellCoord(z, invCell);
-      const x0 = cx > 0 ? cx - 1 : 0;
-      const x1 = cx < D - 1 ? cx + 1 : D - 1;
-      const y0 = cy > 0 ? cy - 1 : 0;
-      const y1 = cy < D - 1 ? cy + 1 : D - 1;
-      const z0 = cz > 0 ? cz - 1 : 0;
-      const z1 = cz < D - 1 ? cz + 1 : D - 1;
 
-      outer: for (let gz = z0; gz <= z1; gz++) {
-        for (let gy = y0; gy <= y1; gy++) {
-          const rowBase = gy * D + gz * D2;
-          for (let gx = x0; gx <= x1; gx++) {
-            const cell = gx + rowBase;
-            const start = this.gridStart[cell];
-            const end = start + this.gridCount[cell];
-            for (let e = start; e < end; e++) {
-              const j = this.gridEntries[e];
-              if (j === i) continue;
-              const j3 = j * 3;
-              const dx = pos[j3] - x;
-              const dy = pos[j3 + 1] - y;
-              const dz = pos[j3 + 2] - z;
-              const d2 = dx * dx + dy * dy + dz * dz;
-              if (d2 > perception2) continue;
-
-              const d = Math.sqrt(d2) || 1e-4;
-              if (d < sepR) {
-                const w = 1 - d / sepR;
-                const inv = (w * w) / d;
-                sepX -= dx * inv;
-                sepY -= dy * inv;
-                sepZ -= dz * inv;
-              }
-              cohX += pos[j3];
-              cohY += pos[j3 + 1];
-              cohZ += pos[j3 + 2];
-              alnX += vel[j3];
-              alnY += vel[j3 + 1];
-              alnZ += vel[j3 + 2];
-              found++;
-
-              if (energy[j] > TUNING.contagiousAbove) {
-                const w = 1 - d / perception;
-                contagion += w;
-                if (w > bestW) {
-                  bestW = w;
-                  bestJ = j;
-                }
-              }
-              if (fear[j] > maxFear) maxFear = fear[j];
-
-              if (found >= MAX_NEIGHBORS) break outer;
+      // Stratified fair sample (the GPU kernel's scheme, see wgsl-sim.ts):
+      // v3 took the first 16 in fixed cell order, so the sample averaged
+      // over cells, not fish. That makes cohesion/alignment depend on where
+      // a fish sits inside its cell, a static force with the grid pitch
+      // that banded the school along the grid planes. Each cell gets a
+      // candidate quota proportional to its population (dithered so the
+      // expectation is exact) from a hashed in-cell start, so the candidates
+      // are a uniform sample of the 27-cell block.
+      // No own-cell priority: any position-quantized bias compounds.
+      let total = 0;
+      for (let oi = 0; oi < 27; oi++) {
+        const gx = cx + OFF_X[oi];
+        const gy = cy + OFF_Y[oi];
+        const gz = cz + OFF_Z[oi];
+        if (gx < 0 || gx >= D || gy < 0 || gy >= D || gz < 0 || gz >= D) {
+          nbCell[oi] = -1;
+          continue;
+        }
+        const cell = gx + gy * D + gz * D2;
+        nbCell[oi] = cell;
+        total += this.gridCount[cell];
+      }
+      // Unlike the GPU kernel, every candidate is examined and the 16
+      // accepts are a reservoir sample of all in-range ones. In a flattened
+      // school (olle-work's sheet, ~33 of 96 candidates in range) the cap
+      // binds about halfway, and stopping there kept the first cells of the
+      // walk: still ±5% banding. Hashes are masked to 30 bits so V8 keeps `%` in
+      // integer registers (a full u32 is a double and `%` becomes fmod).
+      let inRange = 0;
+      if (total > 0) {
+        const candScale = SAMPLE_CAND / total;
+        let rs = pcg((i ^ frameHash) >>> 0);
+        for (let oi = 0; oi < 27; oi++) {
+          const cell = nbCell[oi];
+          if (cell < 0) continue;
+          const cnt = this.gridCount[cell];
+          if (cnt === 0) continue;
+          const h = pcg((rs ^ cell) >>> 0);
+          const dither = (pcg(h) >>> 8) * (1 / 16777216);
+          const quota = Math.min(cnt, Math.floor(cnt * candScale + dither));
+          const start = this.gridStart[cell];
+          const off = (h & 0x3fffffff) % cnt;
+          for (let e = 0; e < quota; e++) {
+            const oe = off + e;
+            const j = this.gridEntries[start + (oe < cnt ? oe : oe - cnt)];
+            if (j === i) continue;
+            const j3 = j * 3;
+            const dx = pos[j3] - x;
+            const dy = pos[j3 + 1] - y;
+            const dz = pos[j3 + 2] - z;
+            if (dx * dx + dy * dy + dz * dz > perception2) continue;
+            if (inRange < MAX_NEIGHBORS) {
+              nbJ[inRange] = j;
+            } else {
+              rs = pcg(rs);
+              const slot = (rs & 0x3fffffff) % (inRange + 1);
+              if (slot < MAX_NEIGHBORS) nbJ[slot] = j;
             }
+            inRange++;
           }
         }
+      }
+      const accepted = inRange < MAX_NEIGHBORS ? inRange : MAX_NEIGHBORS;
+      for (let k = 0; k < accepted; k++) {
+        const j = nbJ[k];
+        const j3 = j * 3;
+        const dx = pos[j3] - x;
+        const dy = pos[j3 + 1] - y;
+        const dz = pos[j3 + 2] - z;
+        const d = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1e-4;
+        if (d < sepR) {
+          const w = 1 - d / sepR;
+          const inv = (w * w) / d;
+          sepX -= dx * inv;
+          sepY -= dy * inv;
+          sepZ -= dz * inv;
+        }
+        cohX += pos[j3];
+        cohY += pos[j3 + 1];
+        cohZ += pos[j3 + 2];
+        alnX += vel[j3];
+        alnY += vel[j3 + 1];
+        alnZ += vel[j3 + 2];
+        found++;
+
+        if (energy[j] > TUNING.contagiousAbove) {
+          const w = 1 - d / perception;
+          contagion += w;
+          if (w > bestW) {
+            bestW = w;
+            bestJ = j;
+          }
+        }
+        if (fear[j] > maxFear) maxFear = fear[j];
       }
 
       // ---- Fine collision grid: continuous close-range personal space ----

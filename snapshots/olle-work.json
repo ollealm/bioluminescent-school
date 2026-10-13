@@ -66,9 +66,12 @@
   },
   "accent": "#8ff2ff",
   "cpu": {
-    "count": 4000,
-    "maxSpeed": 3.6,
-    "particleSize": 1.4,
-    "opacity": 0.5
+    "count": 2500,
+    "maxSpeed": 4,
+    "particleSize": 1.0,
+    "opacity": 0.6,
+    "herd": 0.1,
+    "roamDepth": 0,
+    "cohesion": 1.28
   }
 }
