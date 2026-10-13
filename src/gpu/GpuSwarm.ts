@@ -1294,9 +1294,12 @@ export class GpuSwarm implements SwarmSystem {
       const dz = cen.z - pz;
       // Depth-squashed metric, like the kernel's danger zone.
       const dist = Math.sqrt(dx * dx + dy * dy + dz * 0.45 * (dz * 0.45));
-      evW =
-        P.evade *
-        Math.min(1, Math.max(0, 1 - dist / (P.containRadius * 0.9)));
+      // Full strength until the pointer is OUTSIDE the school (measured
+      // against the live RMS radius), then a short ramp to zero. A linear
+      // fade from the center settled with the cursor still inside the
+      // edge; a school keeps going until the predator is out.
+      const edge = Math.max(2, this.rmsRadius * 1.6);
+      evW = P.evade * Math.min(1, Math.max(0, (edge * 1.25 - dist) / (edge * 0.25)));
       if (dist < 0.3) {
         // Pointer on the centroid: no direction to read, so step aside
         // perpendicular to the heading (stable frame to frame).
@@ -1311,7 +1314,7 @@ export class GpuSwarm implements SwarmSystem {
         evNZ = dz / len;
       }
     }
-    const evTarget = P.containRadius * 0.7 * evW;
+    const evTarget = P.containRadius * 0.9 * evW;
     // One pole (0.35 s) so the center never jumps; with the pointer gone
     // the target is 0 and it decays at the same rate.
     const ek = 1 - Math.exp(-dt / 0.35);

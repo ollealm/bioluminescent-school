@@ -52,7 +52,7 @@
     "stretch": 0.5,
     "collapse": 1.0,
     "shape": 0.9,
-    "bite": 0.7,
+    "bite": 0.5,
     "crowdDim": 1.0,
     "flight": 0.5,
     "accentShare": 0.05,
@@ -60,7 +60,7 @@
     "herd": 0.2,
     "sheet": 0.4,
     "shiver": 1.0,
-    "evade": 0.6,
+    "evade": 0.85,
     "roamDepth": 0.1
   }
 }

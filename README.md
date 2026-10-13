@@ -161,6 +161,18 @@ comparing full parameter sets live:
   most two turns in a row before mill or hover; the spontaneous contract
   share is 0.2·collapse. Logged over 40 s: two full-length turns, no
   chaining.
+- **The cursor disc, round nine.** In a sheet the hollow around a parked
+  cursor became a clean 2D disc with a crisp rim: fish just outside the
+  zone are pushed in by cohesion and herd and pop back out, and the
+  tangential slide makes the rim an orbit. Per-fish zone radii (0.75-1.25x
+  static jitter, up to 1.6x upstream for a fish swimming toward the
+  predator) are in the kernel now but cannot break the circle on their
+  own: the visible edge is the smallest radius. What fixed it is evade at
+  full strength until the pointer is outside the live school (1.6x RMS
+  radius, then a short ramp) with a 0.9·containRadius displacement, so the
+  school leaves: the hole exists for ~1 s, becomes a notch at the edge,
+  and by ~3 s the cursor is outside a compact school. olle-work: bite
+  0.5, evade 0.85.
 - **Visual review** - `await __sweep()` (standard predator pass: the cursor
   enters from the left, crosses into the school, parks, leaves) and
   `await __filmstrip({ frames, intervalMs, path, click })` return one

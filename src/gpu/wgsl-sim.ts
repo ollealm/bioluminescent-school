@@ -936,7 +936,16 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
     pd = pos - lead;
     let pdS = vec3f(pd.x, pd.y, pd.z * 0.45);
     pdist = max(length(pdS), 1e-4);
-    uNorm = pdist / mouseR;
+    // Each fish has its own zone radius, so the hollow is never a clean
+    // circle (in a sheet a shared radius with a crisp bite drew one): a
+    // per-fish jitter (0.75-1.25x, static per fish) and an upstream
+    // stretch - a fish swimming toward the predator shies off up to 60%
+    // earlier, one swimming away lets it come closer. A vacuole in a real
+    // school is a teardrop against the flow, not a sphere.
+    let spd0 = length(vel);
+    let toward = select(0.0, max(0.0, dot(vel / max(spd0, 1e-4), -pd / pdist)), spd0 > 0.2);
+    let rFish = mouseR * (0.75 + 0.5 * seed) * (1.0 + 0.6 * toward);
+    uNorm = pdist / rFish;
     let s01 = min(1.0, pvm / WEDGE_SPEED_REF);
     // Constant-folds away when both wedge dials are 0 (the shipped state:
     // the owner reverted early-reaction as illegible — see GPU_TUNING).
@@ -971,8 +980,8 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
   // the pre-alarmed cohort ahead of a sweep — alarmed but not yet turned —
   // floods the fear population with cruise-heading fish.
   var fearFall = 0.0;
-  if (pointerOn && pdist < mouseR) {
-    let uS = pdist / mouseR;
+  if (pointerOn && uNorm < 1.0) {
+    let uS = uNorm;
     fearFall = 1.0 - smoothstep(bite, 1.0, uS);
   }
 
