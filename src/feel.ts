@@ -7,9 +7,8 @@ import type { Snapshot, SwarmSystem } from "./system";
  * Feel A/B: compare whole tuned states live, and share them by URL.
  *
  * Every `snapshots/*.json` is a "feel" (a full Snapshot, the same shape the
- * panel's Copy JSON produces), keyed by basename. Number keys 1..9 switch
- * between them in sorted order with site-default always on 1, so the
- * canonical v3 state is one keypress away from whatever is being tuned.
+ * panel's Copy JSON produces), keyed by basename. The panel's Feel A/B row
+ * switches between them in sorted order with site-default always first.
  * The active feel is mirrored into `?feel=<name>`, so a link reproduces it.
  *
  * Adding a feel is a file drop: "Save feel..." in the panel downloads
@@ -37,12 +36,6 @@ function isFeel(name: string): boolean {
 export const FEEL_NAMES: string[] = Object.keys(FEELS).sort((a, b) =>
   a === "site-default" ? -1 : b === "site-default" ? 1 : a.localeCompare(b),
 );
-
-/** The `?feel=` selection, only if it names a known snapshot. */
-export function urlFeel(): string | null {
-  const name = new URLSearchParams(location.search).get("feel");
-  return name && isFeel(name) ? name : null;
-}
 
 /** The feel a plain visit boots into on both backends: the one shipped on olle.work. */
 export const DEFAULT_FEEL = "olle-work";
@@ -146,30 +139,17 @@ export function installFeelSwitcher(
     if (requested) console.warn(`[feel] unknown ?feel=${requested}; have: ${FEEL_NAMES.join(", ")}`);
     if (opts.useDefault && isFeel(DEFAULT_FEEL)) {
       // The shipped look: a plain visit gets the final feel, silently (no
-      // URL rewrite). A dev session that saved its own tweaks passes
-      // useDefault false and keeps them.
+      // URL rewrite). Only a re-mount carrying the live state passes
+      // useDefault false.
       if (select(DEFAULT_FEEL, { updateUrl: false })) applied = DEFAULT_FEEL;
     }
   }
-
-  const onKey = (e: KeyboardEvent) => {
-    // A held key would re-apply the snapshot every autorepeat tick.
-    if (e.repeat) return;
-    const target = e.target as HTMLElement;
-    if (/^(input|select|textarea)$/i.test(target?.tagName ?? "") || target?.isContentEditable) return;
-    if (e.metaKey || e.ctrlKey || e.altKey) return;
-    if (!/^[1-9]$/.test(e.key)) return;
-    const name = FEEL_NAMES[Number(e.key) - 1];
-    if (name) select(name);
-  };
-  window.addEventListener("keydown", onKey);
 
   return {
     select,
     names: FEEL_NAMES,
     applied,
     dispose() {
-      window.removeEventListener("keydown", onKey);
       panel.onFeelSelect = null;
       panel.onReset = undefined;
     },

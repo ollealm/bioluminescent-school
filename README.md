@@ -40,8 +40,6 @@ the CPU fallback.
   rest is a *strike*. **Click** sets off a light cascade.
 - **D** opens the dev panel: presets, palettes, every slider, mood pins,
   and *Save feel…*.
-- **1–9** switch between feels (`snapshots/*.json`) in place, without
-  resetting the school.
 - URL parameters: `?feel=<name>` boots a feel (default `olle-work`, the
   shipped one; `site-default` is the v3 state), `?backend=cpu` forces the
   fallback, `?count=N` overrides the particle count (default 25,000 on
@@ -56,7 +54,7 @@ src/
   params.ts        shared spec: sliders, palettes, TUNING (v3 verbatim) + GPU_TUNING
   presets.ts       v3 preset matrix
   system.ts        SwarmSystem: the interface both backends implement
-  feel.ts          named feels (snapshots/*.json), keys 1–9, ?feel=
+  feel.ts          named feels (snapshots/*.json), ?feel=
   main.ts          boot: WebGPU detect → gpu/ ; else lazy-load cpu/ (three.js chunk)
   governor.ts      adaptive count governor (GPU and CPU meters)
   harness.ts       acceptance probes (async, backend-agnostic)

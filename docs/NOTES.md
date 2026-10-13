@@ -141,15 +141,15 @@ rationale in place; user-facing sliders keep their v3 meaning throughout.
 The hard part of this project is taste, so the tooling is built around
 comparing full parameter sets live:
 
-- **Feels** — every `snapshots/*.json` is a named feel. Keys **1–9** switch
-  between them in place (the school keeps swimming; a feel is a temperament,
-  not a density, so the snapshot's `count` is ignored), the URL updates to
-  `?feel=<name>` for sharing, and the panel's *Feel A/B* row shows which is
-  active. *Save feel…* downloads the current sliders as `<name>.json`; drop
+- **Feels** — every `snapshots/*.json` is a named feel. The panel's *Feel
+  A/B* row switches between them in place and shows which is active (the
+  school keeps swimming; a feel is a temperament, not a density, so the
+  snapshot's `count` is ignored), and the URL updates to `?feel=<name>`
+  for sharing. *Save feel…* downloads the current sliders as `<name>.json`; drop
   it into `snapshots/` and it appears on reload. `site-default` is the v3
-  canonical state; **`olle-work` is the shipped feel** — a plain visit
-  boots into it (a dev session with saved slider tweaks keeps those; press
-  Reset or use `?feel=olle-work` to get back).
+  canonical state; **`olle-work` is the shipped feel** — every plain visit
+  boots into it. Slider tweaks are not saved across reloads; keep one with
+  *Save feel…*.
 - **Visual review** — `await __sweep()` (standard predator pass: the cursor
   enters from the left, crosses into the school, parks, leaves) and
   `await __filmstrip({ frames, intervalMs, path, click })` return one

@@ -1,4 +1,4 @@
-import { DevPanel, PANEL_STORAGE_KEY } from "./DevPanel";
+import { DevPanel } from "./DevPanel";
 import { installFeelSwitcher, type FeelSwitcher } from "./feel";
 import { cpuSpec, gpuSpec, makeGovernor, type Governor, type GovernorSpec } from "./governor";
 import type { FilmstripOptions } from "./review";
@@ -108,7 +108,8 @@ async function detectWebGPU(): Promise<GPUAdapter | null> {
 async function mountBackend(
   tryGpu: boolean,
   carry?: Snapshot,
-  panelOpen = !coarsePointer && window.innerWidth >= 768,
+  // Closed on every device: the school is the page; D opens the panel.
+  panelOpen = false,
 ): Promise<void> {
   let application: App | null = null;
   let governorSpec: GovernorSpec | null = null;
@@ -163,30 +164,22 @@ async function mountBackend(
     countStep: countMax > 10000 ? 500 : 100,
     backendLabel: label,
   });
-  // Feel A/B (src/feel.ts) applies any ?feel= selection itself.
-  // A plain visit boots into the shipped feel; a dev session that saved
-  // slider tweaks (the panel's localStorage) keeps those instead.
-  let hasSavedTweaks = false;
-  try {
-    hasSavedTweaks = !!localStorage.getItem(PANEL_STORAGE_KEY);
-  } catch {
-    /* storage blocked: treat as a fresh visit */
-  }
+  // Feel A/B (src/feel.ts) applies any ?feel= selection itself, and a
+  // plain visit always boots into the shipped feel. Only a re-mount after
+  // a lost device skips it: that carries the live state instead.
   const feel = installFeelSwitcher(system, panel, {
     apply: (snap) => system.applySnapshot(snap),
-    useDefault: !hasSavedTweaks && !carry,
+    useDefault: !carry,
   });
-  // A ?feel= snapshot replaces every param, the slowdown included: re-apply
-  // it on top so reduced motion still wins. Only then: without a feel the
-  // panel's localStorage restore may hold a saved reduction already, and a
-  // second pass would compound it.
+  // A feel snapshot replaces every param, the slowdown included: re-apply
+  // it on top so reduced motion still wins.
   if (reduceMotion && feel.applied) {
     applyReducedMotion();
     panel.refresh();
   }
   if (carry) {
-    // Last, after the panel's localStorage restore and the ?feel= apply:
-    // on a re-mount the live state (slider tweaks included) wins.
+    // Last, after any ?feel= apply: on a re-mount the live state (slider
+    // tweaks included) wins.
     system.applySnapshot({ ...carry, count });
     panel.refresh();
   }

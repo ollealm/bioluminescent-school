@@ -1,7 +1,6 @@
 import type { SwarmSystem } from "./system";
 import { DEFAULT_PARAMS, PALETTES, STYLES, type PaletteName, type StyleName, type SwarmParams } from "./params";
 import { DEFAULT_PRESETS, PRESET_REGISTRY, type PresetCategory } from "./presets";
-import { urlFeel } from "./feel";
 
 const CATEGORY_LABELS: Record<PresetCategory, string> = {
   motion: "Movement",
@@ -247,8 +246,8 @@ const CSS = `
 }
 `;
 
-/** localStorage key for the auto-saved slider state (shared by both backends). */
-export const PANEL_STORAGE_KEY = "olle-biolume-gpu-v1";
+/** localStorage key prefix (the descriptions toggle); older versions auto-saved sliders here. */
+const PANEL_STORAGE_KEY = "olle-biolume-gpu-v1";
 
 export interface DevPanelOptions {
   storageKey?: string;
@@ -304,7 +303,13 @@ export class DevPanel {
       backendLabel: options.backendLabel ?? "",
     };
 
-    this.restore();
+    // A plain visit always boots the shipped feel, so slider tweaks are no
+    // longer auto-saved; drop what older versions left behind.
+    try {
+      localStorage.removeItem(this.storageKey);
+    } catch {
+      /* storage blocked */
+    }
 
     if (!document.getElementById("blm-style")) {
       const style = document.createElement("style");
@@ -424,7 +429,7 @@ export class DevPanel {
     root.appendChild(head);
     applyDescs(localStorage.getItem(descKey) !== "0");
 
-    // Feel A/B - whole tuned snapshots, one keypress apart. Empty and
+    // Feel A/B - whole tuned snapshots, one click apart. Empty and
     // hidden until installFeelSwitcher hands over the names (setFeels).
     this.feelWrap = el("div", "") as HTMLDivElement;
     this.feelWrap.style.display = "none";
@@ -432,7 +437,7 @@ export class DevPanel {
     this.feelGrid = el("div", "blm-feels") as HTMLDivElement;
     this.feelWrap.appendChild(this.feelGrid);
     this.feelWrap.appendChild(
-      el("div", "blm-hint", "Full snapshots from snapshots/*.json · keys 1-9 switch · ?feel=name in the URL shares one"),
+      el("div", "blm-hint", "Full snapshots from snapshots/*.json · ?feel=name in the URL shares one"),
     );
     root.appendChild(this.feelWrap);
 
@@ -467,7 +472,7 @@ export class DevPanel {
     legacySummary.textContent = "v3 presets (reset a whole category)";
     legacy.appendChild(legacySummary);
     legacy.appendChild(el("div", "blm-group-desc",
-      "Movement resets every motion slider (collapse, shape, herd, shiver, sheet included) to a v3 set; Reactions does the same for the predator and cascade sliders. They do not combine with a feel - pick a feel again (keys 1-9) to get it back."));
+      "Movement resets every motion slider (collapse, shape, herd, shiver, sheet included) to a v3 set; Reactions does the same for the predator and cascade sliders. They do not combine with a feel - pick the feel again above to get it back."));
     for (const cat of Object.keys(PRESET_REGISTRY) as PresetCategory[]) {
       legacy.appendChild(el("div", "blm-sub", CATEGORY_LABELS[cat]));
       const grid = el("div", "blm-presets");
@@ -478,7 +483,6 @@ export class DevPanel {
           sys.applyPreset(cat, name);
           this.descEl.textContent = preset.description;
           this.refresh();
-          this.save();
         });
         this.presetBtns.set(`${cat}:${name}`, btn);
         grid.appendChild(btn);
@@ -495,7 +499,6 @@ export class DevPanel {
     selects.appendChild(
       this.makeSelect("Style", STYLES.map((s) => [s, s]), (v) => {
         sys.setStyle(v as StyleName);
-        this.save();
       }, (sel) => (this.styleSel = sel), "Sprite shape: soft glow, hard orb, star spark, or blinking firefly"),
     );
     selects.appendChild(
@@ -507,7 +510,6 @@ export class DevPanel {
           // Without an override each picker follows the new palette.
           this.syncAccent();
           this.syncBase();
-          this.save();
         },
         (sel) => (this.paletteSel = sel),
         "Color scheme — also sets the flash hue",
@@ -536,7 +538,6 @@ export class DevPanel {
         // to a full respawn (v3 behavior) when it can't.
         if (sys.resize) sys.resize(next);
         else sys.rebuild(next);
-        this.save();
       }, 350);
     });
     countRow.appendChild(this.countInput);
@@ -587,7 +588,6 @@ export class DevPanel {
     );
     actions.appendChild(
       this.makeAction("↺ Reset", () => {
-        localStorage.removeItem(this.storageKey);
         // Every key, not just the preset-owned ones: a feel or slider tweak
         // outside the presets' keys would otherwise survive the reset.
         Object.assign(sys.params, DEFAULT_PARAMS);
@@ -654,7 +654,6 @@ export class DevPanel {
       const v = Number(input.value);
       (sys.params as unknown as Record<string, number>)[def.key] = v;
       out.textContent = fmt(v);
-      this.save();
     });
 
     this.sliderInputs.set(def.key, { input, out });
@@ -711,12 +710,10 @@ export class DevPanel {
         sys.setAccent?.(this.accentInput.value);
         // Not syncAccent: rewriting the value mid-drag would fight the picker.
         this.accentReset.disabled = false;
-        this.save();
       });
       this.accentReset.addEventListener("click", () => {
         sys.setAccent?.(null);
         this.syncAccent();
-        this.save();
       });
     } else {
       // A backend without overrides: palette accents only.
@@ -752,12 +749,10 @@ export class DevPanel {
         sys.setBase?.(this.baseInput.value);
         // Not syncBase: rewriting the value mid-drag would fight the picker.
         this.baseReset.disabled = false;
-        this.save();
       });
       this.baseReset.addEventListener("click", () => {
         sys.setBase?.(null);
         this.syncBase();
-        this.save();
       });
     } else {
       // A backend without overrides: palette colors only.
@@ -830,32 +825,6 @@ export class DevPanel {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
-  private save(): void {
-    try {
-      localStorage.setItem(this.storageKey, JSON.stringify(this.system.getSnapshot()));
-    } catch {
-      // Private mode / quota — persistence is best-effort.
-    }
-  }
-
-  private restore(): void {
-    // A ?feel= link is an explicit selection: the switcher applies it, and
-    // last session's auto-saved tweaks must not paint over it first.
-    if (urlFeel()) return;
-    try {
-      const raw = localStorage.getItem(this.storageKey);
-      // Count is a density decision owned by boot (device class, ?count=,
-      // the governor), not a saved tweak: restoring a stale count would
-      // pin a desktop at last session's phone-sized school.
-      if (raw) {
-        const { count: _count, ...rest } = JSON.parse(raw) as Record<string, unknown>;
-        void _count;
-        this.system.applySnapshot(rest);
-      }
-    } catch {
-      localStorage.removeItem(this.storageKey);
-    }
-  }
 }
 
 function el(tag: string, cls: string, text?: string): HTMLElement {

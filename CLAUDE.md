@@ -14,8 +14,8 @@ Verify with `npm run typecheck` and the acceptance probes (`window.harness()`).
 `snapshots/site-default.json` is v3's canonical state (the GPU backend
 reproduces it; the CPU engine keeps its always-on ports, see docs/NOTES.md §3)
 and `snapshots/olle-work.json` is the shipped feel. `?backend=cpu` forces the fallback; `?count=N` overrides
-particle count; `?feel=<name>` boots a `snapshots/*.json` feel (keys 1–9
-switch live; `await feel()` measures shape/breathing/coherence of the live
+particle count; `?alive=1` keeps a hidden tab simulating; `?feel=<name>`
+boots a `snapshots/*.json` feel (`await feel()` measures shape/breathing/coherence of the live
 school; `await __sweep()` returns a filmstrip JPEG of the predator pass with
 hot-pixel stats for visual review). `snapshots/olle-work.json` is the
 shipped feel and the boot default; `site-default` is the v3 state.
