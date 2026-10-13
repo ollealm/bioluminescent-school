@@ -209,6 +209,8 @@ export class GpuSwarm implements SwarmSystem {
   // --- Swarm director state (identical numbers to the reference) ---
   private mood = M_CRUISE;
   private moodTimer = 6;
+  /** Dev test control: pin the director to one mood (index), null = the FSM. */
+  private forced: number | null = null;
   private headX = 1;
   private headY = 0;
   private headZ = 0;
@@ -262,6 +264,30 @@ export class GpuSwarm implements SwarmSystem {
 
   get moodName(): string {
     return MOOD_NAMES[this.mood];
+  }
+
+  get moodNames(): readonly string[] {
+    return MOOD_NAMES;
+  }
+
+  get forcedMood(): string | null {
+    return this.forced === null ? null : MOOD_NAMES[this.forced];
+  }
+
+  /**
+   * Pin the director to one mood so it can be judged in isolation; null
+   * hands control back to the FSM (the current mood runs out its timer).
+   */
+  forceMood(name: string | null): void {
+    const i = name === null ? -1 : MOOD_NAMES.indexOf(name);
+    this.forced = i < 0 ? null : i;
+    if (this.forced !== null) this.enterForced();
+  }
+
+  /** Re-enter the pinned mood; startle goes through startle() so its pocket fires again. */
+  private enterForced(): void {
+    if (this.forced === M_STARTLE) this.startle();
+    else this.enterMood(this.forced!);
   }
 
   /** Latest known centroid (async readback; 1–2 frames stale). */
@@ -776,6 +802,13 @@ export class GpuSwarm implements SwarmSystem {
   }
 
   startle(at?: Vec3): void {
+    this.pushStartle(at);
+    // While pinned to another mood a startle is just its pocket, so the
+    // forced mood stays isolated.
+    if (this.forced === null || this.forced === M_STARTLE) this.enterMood(M_STARTLE);
+  }
+
+  private pushStartle(at?: Vec3): void {
     if (at) {
       this.pending.push({ kind: EV_STARTLE, center: [at.x, at.y, at.z] });
     } else {
@@ -785,7 +818,6 @@ export class GpuSwarm implements SwarmSystem {
         needsResolve: true,
       });
     }
-    this.enterMood(M_STARTLE);
   }
 
   /** Spawn a spontaneous cascade at a random fish — sometimes an implosion. */
@@ -1005,7 +1037,9 @@ export class GpuSwarm implements SwarmSystem {
 
     this.moodTimer -= dt;
     if (this.moodTimer <= 0) {
-      this.enterMood(this.mood === M_STARTLE ? M_CRUISE : this.pickNextMood());
+      // Pinned: re-enter so turn keeps turning and contract keeps contracting.
+      if (this.forced !== null) this.enterForced();
+      else this.enterMood(this.mood === M_STARTLE ? M_CRUISE : this.pickNextMood());
     }
 
     // Alarm collapse: once a real scare subsides (alarm under half its
@@ -1017,6 +1051,7 @@ export class GpuSwarm implements SwarmSystem {
     this.alarmCooldown -= dt;
     if (
       P.collapse > 0 &&
+      this.forced === null &&
       this.alarmPeak > 0.08 &&
       this.alarm < 0.5 * this.alarmPeak &&
       this.mood !== M_CONTRACT &&

@@ -239,6 +239,7 @@ const CSS = `
 .blm-feel { text-align: left; padding-left: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .blm-feel-key { color: rgba(96, 255, 178, 0.45); margin-right: 6px; }
 .blm-feel.active .blm-feel-key { color: #7dffb0; }
+.blm-moods { grid-template-columns: repeat(3, 1fr); }
 .blm-gpu-only { color: rgba(255, 209, 102, 0.6); margin-left: 4px; }
 .blm-foot { margin-top: 10px; font-size: 9px; color: rgba(150, 220, 185, 0.35); text-align: center; }
 @media (max-width: 640px) {
@@ -268,6 +269,7 @@ export class DevPanel {
   private toggleBtn: HTMLButtonElement;
   private fpsEl!: HTMLSpanElement;
   private descEl!: HTMLDivElement;
+  private legacyEl: HTMLDetailsElement | null = null;
   private sliderInputs = new Map<string, { input: HTMLInputElement; out: HTMLOutputElement }>();
   private presetBtns = new Map<string, HTMLButtonElement>();
   private styleSel!: HTMLSelectElement;
@@ -283,6 +285,8 @@ export class DevPanel {
   private feelGrid!: HTMLDivElement;
   private feelBtns = new Map<string, HTMLButtonElement>();
   private feelName: string | null = null;
+  private moodBtns = new Map<string | null, HTMLButtonElement>();
+  private moodNow: HTMLDivElement | null = null;
   /** Set by installFeelSwitcher (src/feel.ts); Feel A/B buttons route through it. */
   onFeelSelect: ((name: string) => void) | null = null;
   /** Set by installFeelSwitcher: Reset lands on the shipped feel, not bare v3 defaults. */
@@ -339,6 +343,15 @@ export class DevPanel {
     this.fpsEl.textContent = `${rounded} fps`;
     this.fpsEl.style.color =
       rounded >= 55 ? "#7dffb0" : rounded >= 30 ? "#ffd166" : "#ff7b7b";
+    this.syncMood();
+  }
+
+  /** Highlight the pinned mood (or auto) and show what the director is doing now. */
+  private syncMood(): void {
+    if (!this.moodNow) return;
+    const forced = this.system.forcedMood ?? null;
+    for (const [n, btn] of this.moodBtns) btn.classList.toggle("active", n === forced);
+    this.moodNow.textContent = `now: ${this.system.moodName}`;
   }
 
   /** Populate the Feel A/B row; index i gets hotkey i+1 (first nine). */
@@ -421,9 +434,40 @@ export class DevPanel {
     );
     root.appendChild(this.feelWrap);
 
-    // Presets — one row of buttons per category, freely combinable.
+    // Mood - pin the director to one mood to judge it in isolation. A test
+    // control only: never saved to localStorage or snapshots. GPU only.
+    if (sys.forceMood && sys.moodNames) {
+      root.appendChild(el("div", "blm-sub", "Mood"));
+      const grid = el("div", "blm-presets blm-moods");
+      for (const name of [null, ...sys.moodNames]) {
+        const btn = el("button", "blm-preset", name ?? "auto") as HTMLButtonElement;
+        btn.title = name ? `Hold the director in ${name}` : "Let the director pick moods";
+        btn.addEventListener("click", () => {
+          sys.forceMood?.(name);
+          this.syncMood();
+        });
+        this.moodBtns.set(name, btn);
+        grid.appendChild(btn);
+      }
+      root.appendChild(grid);
+      // Not a blm-hint: the live mood must stay visible with descriptions off.
+      this.moodNow = el("div", "blm-count-note", "") as HTMLDivElement;
+      root.appendChild(this.moodNow);
+      this.syncMood();
+    }
+
+    // v3 presets, folded away: they are whole-category resets (motion or
+    // reaction keys back to a v3 set, the GPU-only levers in that category
+    // to 0), not modifiers of the active feel. The owner mistook them for
+    // modifiers, so they live at the bottom under a collapsed heading.
+    const legacy = document.createElement("details");
+    const legacySummary = document.createElement("summary");
+    legacySummary.textContent = "v3 presets (reset a whole category)";
+    legacy.appendChild(legacySummary);
+    legacy.appendChild(el("div", "blm-group-desc",
+      "Movement resets every motion slider (collapse, shape, herd, shiver, sheet included) to a v3 set; Reactions does the same for the predator and cascade sliders. They do not combine with a feel - pick a feel again (keys 1-9) to get it back."));
     for (const cat of Object.keys(PRESET_REGISTRY) as PresetCategory[]) {
-      root.appendChild(el("div", "blm-sub", CATEGORY_LABELS[cat]));
+      legacy.appendChild(el("div", "blm-sub", CATEGORY_LABELS[cat]));
       const grid = el("div", "blm-presets");
       for (const [name, preset] of Object.entries(PRESET_REGISTRY[cat])) {
         const btn = el("button", "blm-preset", preset.label) as HTMLButtonElement;
@@ -437,10 +481,12 @@ export class DevPanel {
         this.presetBtns.set(`${cat}:${name}`, btn);
         grid.appendChild(btn);
       }
-      root.appendChild(grid);
+      legacy.appendChild(grid);
     }
-    this.descEl = el("div", "blm-desc", "mix a movement with a reaction · style & palette below") as HTMLDivElement;
+    this.descEl = el("div", "blm-desc", "style & palette below · sliders are the feel") as HTMLDivElement;
     root.appendChild(this.descEl);
+    // Appended after the slider groups (see the end of build()).
+    this.legacyEl = legacy;
 
     // Style / palette selects
     const selects = el("div", "blm-selects");
@@ -519,6 +565,7 @@ export class DevPanel {
       }
       root.appendChild(details);
     }
+    if (this.legacyEl) root.appendChild(this.legacyEl);
 
     // Actions
     const actions = el("div", "blm-actions");

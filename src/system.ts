@@ -20,6 +20,13 @@ export interface SwarmSystem {
   getCount(): number;
   /** Current director mood, for harnesses and debugging. */
   readonly moodName: string;
+  /**
+   * Optional dev test control (GPU only): every mood the director knows,
+   * the one it is pinned to (null = the normal FSM), and the pin itself.
+   */
+  readonly moodNames?: readonly string[];
+  readonly forcedMood?: string | null;
+  forceMood?(name: string | null): void;
 
   applyPreset(category: PresetCategory, name: string): void;
   setPalette(name: PaletteName): void;
