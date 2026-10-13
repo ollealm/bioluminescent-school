@@ -26,15 +26,16 @@
       .brand {
         top: 22px; left: 26px;
         font-size: 12px;
-        text-transform: lowercase;
-        color: rgba(190, 255, 220, 0.45);
+        font-family: inherit;
+        letter-spacing: 0.04em;
+        color: rgba(190, 255, 220, 0.8);
+        background: none; border: 0; padding: 4px 0; cursor: pointer;
+        pointer-events: auto; user-select: none;
       }
-      .brand strong { color: rgba(190, 255, 220, 0.8); font-weight: 600; }
-      .hint {
-        bottom: 20px; left: 26px;
-        font-size: 11px;
-        color: rgba(190, 255, 220, 0.32);
-      }
+      .brand:hover { color: rgba(190, 255, 220, 1); }
+      .brand.copied { color: rgba(190, 255, 220, 0.55); }
+      .hint { display: none; }
+      .blm-toggle { display: none !important; }
       @media (max-width: 640px) {
         .brand { top: 16px; left: 18px; }
         .hint { bottom: 14px; left: 18px; }
@@ -43,8 +44,8 @@
   </head>
   <body>
     <div id="app"></div>
-    <div class="overlay brand"><strong>olle.work</strong> · bioluminescent school <span id="backend-tag">v4</span></div>
-    <div class="overlay hint">drag through the swarm · click for a cascade · press D for controls</div>
+    <button class="overlay brand" id="mail" type="button" title="copy address">hi@olle.work</button>
+    <span id="backend-tag" hidden></span>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

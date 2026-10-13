@@ -339,7 +339,7 @@ window.addEventListener("pointermove", (e) => {
 window.addEventListener("pointerdown", (e) => {
   if (pauseDepth > 0) return;
   // Clicks on the panel shouldn't detonate the swarm.
-  if ((e.target as HTMLElement).closest?.(".blm-panel, .blm-toggle")) return;
+  if ((e.target as HTMLElement).closest?.(".blm-panel, .blm-toggle, #mail")) return;
   live?.system.updateMousePosition(toNDC(e));
   live?.system.burst();
 });
@@ -440,6 +440,28 @@ Object.assign(window as object, {
   __sweep: async (opts?: FilmstripOptions) =>
     (await import("./review")).runSweep(opts),
 });
+
+// The address in the corner copies itself; "copied" shows for 3 s.
+const mail = document.getElementById("mail");
+if (mail) {
+  const address = "hi@olle.work";
+  let timer = 0;
+  mail.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(address);
+    } catch {
+      /* clipboard blocked: the address is still readable */
+    }
+    mail.textContent = "copied";
+    mail.classList.add("copied");
+    window.clearTimeout(timer);
+    timer = window.setTimeout(() => {
+      mail.textContent = address;
+      mail.classList.remove("copied");
+    }, 3000);
+  });
+}
 
 mountBackend(true)
   .then(() => {

@@ -47,6 +47,16 @@ export function urlFeel(): string | null {
 /** The feel a plain visit boots into: the one shipped on olle.work. */
 export const DEFAULT_FEEL = "olle-work";
 
+/**
+ * The CPU fallback is the untouched v3 engine: it ignores every GPU-only
+ * lever, so a feel tuned with sheet/herd/evade reads wrong on it (2,600
+ * big bright dots at max speed 5). It boots into its own canonical state.
+ */
+function defaultFor(system: SwarmSystem): string {
+  const isGpu = typeof (system as unknown as { readState?: unknown }).readState === "function";
+  return isGpu ? DEFAULT_FEEL : "site-default";
+}
+
 export interface FeelSwitcherOptions {
   /** How a feel's snapshot (count stripped) reaches the system. */
   apply?: (snap: Partial<Snapshot>) => void;
@@ -111,7 +121,7 @@ export function installFeelSwitcher(
 
   panel.setFeels(FEEL_NAMES);
   panel.onFeelSelect = (name) => void select(name);
-  panel.onReset = () => void select(DEFAULT_FEEL, { updateUrl: false });
+  panel.onReset = () => void select(defaultFor(system), { updateUrl: false });
 
   let applied: string | null = null;
   const requested = new URLSearchParams(location.search).get("feel");
@@ -120,11 +130,12 @@ export function installFeelSwitcher(
   } else {
     // A typo'd link still gets the shipped look rather than bare defaults.
     if (requested) console.warn(`[feel] unknown ?feel=${requested}; have: ${FEEL_NAMES.join(", ")}`);
-    if (opts.useDefault && isFeel(DEFAULT_FEEL)) {
+    if (opts.useDefault && isFeel(defaultFor(system))) {
       // The shipped look: a plain visit gets the final feel, silently (no
       // URL rewrite). A dev session that saved its own tweaks passes
       // useDefault false and keeps them.
-      if (select(DEFAULT_FEEL, { updateUrl: false })) applied = DEFAULT_FEEL;
+      const name = defaultFor(system);
+      if (select(name, { updateUrl: false })) applied = name;
     }
   }
 
