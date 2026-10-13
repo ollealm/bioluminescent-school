@@ -60,7 +60,7 @@
     "herd": 0.2,
     "sheet": 0.4,
     "shiver": 1.0,
-    "evade": 0.85,
+    "evade": 0.5,
     "roamDepth": 0.1
   }
 }
