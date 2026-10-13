@@ -222,6 +222,10 @@ export class GpuSwarm implements SwarmSystem {
   private turnIndex = 0;
   private turnRadius = 0;
   private turnActive = 0;
+  /** An alarm collapse waiting for a running turn to finish. */
+  private alarmPending = false;
+  /** Consecutive turns (through cruise) since another mood; capped at 2. */
+  private turnsInARow = 0;
   private startleClock = 25;
   /** Shiver (GPU-only): countdown to the next resting agitation wave. */
   private shiverClock = 8;
@@ -884,8 +888,11 @@ export class GpuSwarm implements SwarmSystem {
     const tempo = Math.max(0.25, P.tempo);
     const prev = this.mood;
     this.mood = mood;
-    // Any transition ends a running turn wave; M_TURN re-arms it below.
-    this.turnActive = 0;
+    // Released from a contraction, the school pops outward (separation
+    // 1.25) whatever mood it enters; it eases back to 1 like the others.
+    const popAfterContract = prev === M_CONTRACT && mood !== M_CONTRACT;
+    // The turn wave is NOT cleared on a transition: it outlives the turn
+    // mood (see updateDirector) so the school never snaps onto the heading.
     // Personal space is the reference's everywhere except the contraction
     // and the turn that releases it; the herd gain idles outside contract.
     this.tgtSep = 1;
@@ -904,7 +911,13 @@ export class GpuSwarm implements SwarmSystem {
       case M_TURN: {
         // Long enough for the wave (GPU_TUNING.turnWaveSpeed) to cross the
         // school: the owner found the old 1.2-2 s turns too short.
-        this.moodTimer = (2.6 + Math.random() * 1.4) / tempo;
+        this.turnsInARow++;
+        // Duration is the wave's crossing time (plus a beat to settle),
+        // not a tempo-scaled constant: at tempo 1.8 the old formula ended
+        // turns at 1.4-2.2 s, before the front had crossed, and the
+        // snap-to-heading at the end read as a second turn starting.
+        this.moodTimer =
+          (2.4 * this.rmsRadius) / GPU_TUNING.turnWaveSpeed + 0.8 + Math.random() * 0.6;
         this.tgtAlign = 1.6;
         this.tgtCoh = 0.95;
         this.tgtMill = 0;
@@ -914,7 +927,7 @@ export class GpuSwarm implements SwarmSystem {
         this.tgtSpeed = 0.95;
         // Released from a contraction, the school pops outward as it darts
         // onto the new heading.
-        if (prev === M_CONTRACT) this.tgtSep = 1.25;
+        // (the post-contraction pop is applied below for every mood)
         this.turnOldX = this.headX;
         this.turnOldY = this.headY;
         this.turnOldZ = this.headZ;
@@ -933,6 +946,7 @@ export class GpuSwarm implements SwarmSystem {
         break;
       }
       case M_MILL:
+        this.turnsInARow = 0;
         this.moodTimer = (6 + Math.random() * 7) / tempo;
         this.tgtAlign = 1.25;
         this.tgtCoh = 1.05;
@@ -941,6 +955,7 @@ export class GpuSwarm implements SwarmSystem {
         this.tgtSpeed = 0.5;
         break;
       case M_HOVER:
+        this.turnsInARow = 0;
         this.moodTimer = (3.5 + Math.random() * 5) / tempo;
         this.tgtAlign = 0.85;
         this.tgtCoh = 1.15;
@@ -986,6 +1001,7 @@ export class GpuSwarm implements SwarmSystem {
         break;
       }
     }
+    if (popAfterContract) this.tgtSep = 1.25;
   }
 
   private pickNextMood(): number {
@@ -995,13 +1011,20 @@ export class GpuSwarm implements SwarmSystem {
     if (
       c > 0 &&
       (this.mood === M_CRUISE || this.mood === M_MILL) &&
-      Math.random() < Math.min(0.7, 0.35 * c)
+      Math.random() < Math.min(0.5, 0.2 * c)
     ) {
       return M_CONTRACT;
     }
     const r = Math.random();
     switch (this.mood) {
       case M_CRUISE:
+        // Turns chain through cruise (turn → cruise → turn). After two in
+        // a row the school does something else first; the owner found
+        // back-to-back turns disruptive.
+        if (this.turnsInARow >= 2) {
+          this.turnsInARow = 0;
+          return r < 0.5 ? M_MILL : M_HOVER;
+        }
         return r < 0.5 ? M_TURN : r < 0.72 ? M_MILL : M_HOVER;
       case M_TURN:
         return M_CRUISE;
@@ -1010,7 +1033,10 @@ export class GpuSwarm implements SwarmSystem {
       case M_HOVER:
         return r < 0.55 ? M_CRUISE : M_TURN;
       case M_CONTRACT:
-        return r < 0.7 ? M_TURN : M_CRUISE;
+        // Release into cruise, not a turn: contract → turn → cruise → turn
+        // chained into near-continuous turning. The pop happens on any
+        // mood entered after a contraction (see enterMood).
+        return M_CRUISE;
       default:
         return M_CRUISE;
     }
@@ -1057,7 +1083,13 @@ export class GpuSwarm implements SwarmSystem {
       }
     }
 
-    if (this.mood === M_TURN) this.turnRadius += GPU_TUNING.turnWaveSpeed * dt;
+    // The front keeps growing after the turn mood ends (no snap: fish the
+    // wave has not reached keep the old heading) until it has crossed the
+    // school; a new turn re-arms it from zero.
+    if (this.turnActive > 0) {
+      this.turnRadius += GPU_TUNING.turnWaveSpeed * dt;
+      if (this.turnRadius > 3.0 * this.rmsRadius + 2) this.turnActive = 0;
+    }
     this.moodTimer -= dt;
     if (this.moodTimer <= 0) {
       // Pinned: re-enter so turn keeps turning and contract keeps contracting.
@@ -1081,10 +1113,17 @@ export class GpuSwarm implements SwarmSystem {
       this.mood !== M_STARTLE &&
       this.alarmCooldown <= 0
     ) {
-      this.contractFromAlarm = true;
-      this.enterMood(M_CONTRACT);
+      // A running turn finishes first (a contraction cutting a turn short
+      // read as "a new turn starting before the last one ended"); the
+      // collapse is queued and fires when the turn's timer runs out.
+      this.alarmPending = true;
       this.alarmPeak = this.alarm;
       this.alarmCooldown = 4;
+    }
+    if (this.alarmPending && this.mood !== M_TURN && this.mood !== M_CONTRACT && this.mood !== M_STARTLE) {
+      this.alarmPending = false;
+      this.contractFromAlarm = true;
+      this.enterMood(M_CONTRACT);
     }
 
     // Bend the heading toward home when the school strays.

@@ -150,7 +150,17 @@ comparing full parameter sets live:
   back into a whole-school rotation), fish inside follow the new one, and
   alignment carries the bend ahead of the front. Turns last 2.6-4 s / tempo
   at drive 1.2. Mood pin buttons in the panel (auto + each mood) exist to
-  test moods in isolation.
+  test moods in isolation. Pacing (owner: "a new turn starts before the
+  previous one is finished; ideally one or two turns before the next
+  mood"): a turn's duration is the wave's crossing time (2.4·RMS radius /
+  turnWaveSpeed + ~1 s), not tempo-scaled; the front keeps growing after
+  the mood ends so the school never snaps onto the heading; an alarm
+  collapse queues behind a running turn instead of cutting it; a
+  contraction releases into cruise (the separation pop now applies to
+  whatever mood follows it) instead of 70% into a turn; cruise allows at
+  most two turns in a row before mill or hover; the spontaneous contract
+  share is 0.2·collapse. Logged over 40 s: two full-length turns, no
+  chaining.
 - **Visual review** - `await __sweep()` (standard predator pass: the cursor
   enters from the left, crosses into the school, parks, leaves) and
   `await __filmstrip({ frames, intervalMs, path, click })` return one
