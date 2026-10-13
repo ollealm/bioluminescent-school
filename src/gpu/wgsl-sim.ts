@@ -45,6 +45,37 @@ export const U_VEC4S = 22;
 
 const D = TUNING.gridDim;
 
+const [FINE_X, FINE_Y, FINE_Z] = GPU_TUNING.fineGridDims;
+/** Cells in the fine collision grid. */
+export const FINE_CELLS = FINE_X * FINE_Y * FINE_Z;
+const CELLS_JS = D * D * D;
+
+/**
+ * Fine collision grid geometry. Shared by the sim (collision pushout) and
+ * the sprite shader (crowd dim): both index the same cells, so they must
+ * stay one definition.
+ */
+export const WGSL_FINE_GRID = /* wgsl */ `
+const FINE_DIM: vec3i = vec3i(${FINE_X}, ${FINE_Y}, ${FINE_Z});
+const FINE_CELLS: u32 = ${FINE_CELLS}u;
+const FINE_INV: f32 = ${1 / GPU_TUNING.fineCellSize};
+const FINE_CELL_SZ: f32 = ${GPU_TUNING.fineCellSize};
+
+// Cell coordinates, centered on the origin. A fish outside the grid is
+// clamped into an edge cell.
+fn fineCoord(p: vec3f) -> vec3i {
+  return clamp(vec3i(floor(p * FINE_INV)) + FINE_DIM / 2, vec3i(0), FINE_DIM - 1);
+}
+
+fn fineInGrid(c: vec3i) -> bool {
+  return all(c >= vec3i(0)) && all(c < FINE_DIM);
+}
+
+fn fineIndex(c: vec3i) -> u32 {
+  return u32(c.x) + u32(c.y) * u32(FINE_DIM.x) + u32(c.z) * u32(FINE_DIM.x * FINE_DIM.y);
+}
+`;
+
 /** The 27 neighbor-cell offsets as a WGSL const array. */
 function offsets27(): string {
   const rows: string[] = [];
@@ -78,23 +109,20 @@ const PAIR_PUSH: f32 = ${GPU_TUNING.pairPush};
 const PAIR_RANGE: f32 = ${GPU_TUNING.pairPushRange};
 
 // Fine collision grid (close-range personal space only; see GPU_TUNING).
-const FINE_D: i32 = ${GPU_TUNING.fineGridDim};
-const FINE_CELLS: u32 = ${GPU_TUNING.fineGridDim ** 3}u;
-const FINE_INV: f32 = ${1 / GPU_TUNING.fineCellSize};
-const FINE_CELL_SZ: f32 = ${GPU_TUNING.fineCellSize};
+${WGSL_FINE_GRID}
 
 // The two grids share two buffers. gridData (u32): fine starts, coarse
 // starts, coarse entries, fine entries — the fine-entries offset depends on
-// the allocated capacity and arrives in U[19]. gridAtomics (atomic<u32>):
+// the allocated capacity and arrives in U[4].w. gridAtomics (atomic<u32>):
 // coarse counts, fine counts, coarse cursors, fine cursors.
 const FS_OFF: u32 = 0u;
-const CS_OFF: u32 = ${GPU_TUNING.fineGridDim ** 3 + 1}u;
-const CE_OFF: u32 = ${GPU_TUNING.fineGridDim ** 3 + 1 + TUNING.gridDim ** 3 + 1}u;
+const CS_OFF: u32 = ${FINE_CELLS + 1}u;
+const CE_OFF: u32 = ${FINE_CELLS + 1 + CELLS_JS + 1}u;
 const CC_OFF: u32 = 0u;
-const FC_OFF: u32 = ${TUNING.gridDim ** 3}u;
-const CU_OFF: u32 = ${TUNING.gridDim ** 3 + GPU_TUNING.fineGridDim ** 3}u;
-const FU_OFF: u32 = ${2 * TUNING.gridDim ** 3 + GPU_TUNING.fineGridDim ** 3}u;
-const ATOMICS_LEN: u32 = ${2 * (TUNING.gridDim ** 3 + GPU_TUNING.fineGridDim ** 3)}u;
+const FC_OFF: u32 = ${CELLS_JS}u;
+const CU_OFF: u32 = ${CELLS_JS + FINE_CELLS}u;
+const FU_OFF: u32 = ${2 * CELLS_JS + FINE_CELLS}u;
+const ATOMICS_LEN: u32 = ${2 * (CELLS_JS + FINE_CELLS)}u;
 const WEDGE_AHEAD: f32 = ${GPU_TUNING.wedgeAhead};
 const WEDGE_SIDE: f32 = ${GPU_TUNING.wedgeSide};
 const WEDGE_SPEED_REF: f32 = ${GPU_TUNING.wedgeSpeedRef};
@@ -155,10 +183,6 @@ fn cellCoord(v: f32, invCell: f32) -> i32 {
   return clamp(i32(floor(v * invCell)) + (D / 2), 0, D - 1);
 }
 
-fn fineCoord(v: f32) -> i32 {
-  return clamp(i32(floor(v * FINE_INV)) + (FINE_D / 2), 0, FINE_D - 1);
-}
-
 fn coarseCellOf(p: vec3f, invCell: f32) -> u32 {
   return u32(cellCoord(p.x, invCell))
     + u32(cellCoord(p.y, invCell)) * u32(D)
@@ -166,9 +190,7 @@ fn coarseCellOf(p: vec3f, invCell: f32) -> u32 {
 }
 
 fn fineCellOf(p: vec3f) -> u32 {
-  return u32(fineCoord(p.x))
-    + u32(fineCoord(p.y)) * u32(FINE_D)
-    + u32(fineCoord(p.z)) * u32(FINE_D * FINE_D);
+  return fineIndex(fineCoord(p));
 }
 `;
 
@@ -208,61 +230,115 @@ fn scatterGrid(@builtin(global_invocation_id) gid: vec3u) {
 }
 `;
 
+/** Cells per scan block (one workgroup); both grids' cell counts are multiples. */
+export const SCAN_BLOCK = 256;
+/** Scan blocks per grid: coarse blocks first, then fine, in one scratch buffer. */
+export const SCAN_BLOCKS_COARSE = CELLS_JS / SCAN_BLOCK;
+export const SCAN_BLOCKS_FINE = FINE_CELLS / SCAN_BLOCK;
+if (!Number.isInteger(SCAN_BLOCKS_COARSE) || !Number.isInteger(SCAN_BLOCKS_FINE)) {
+  throw new Error("grid cell counts must be multiples of the scan block");
+}
+
 /**
  * Prefix scans for both grids: cell counts → start offsets + scatter
- * cursors. One workgroup each; threads walk contiguous chunks serially.
+ * cursors. Three dispatches, each covering both grids: scanReduce sums each
+ * 256-cell block, scanBlocks turns the block sums into block offsets (one
+ * workgroup per grid), scanDown scans inside each block and adds its
+ * offset. A single workgroup per grid used to walk the cells in contiguous
+ * per-thread chunks: 1.3 ms of a 2.2 ms step at 25k on M-series, and a cost
+ * the count governor could not shed (it is per cell, not per fish).
  */
 export const WGSL_SCAN = /* wgsl */ `
 ${WGSL_COMMON}
 
 @group(0) @binding(0) var<storage, read_write> gridAtomics: array<atomic<u32>>;
 @group(0) @binding(1) var<storage, read_write> gridData: array<u32>;
+@group(0) @binding(2) var<storage, read_write> blockSums: array<u32>;
 
-var<workgroup> partial: array<u32, 256>;
+const C_BLOCKS: u32 = ${SCAN_BLOCKS_COARSE}u;
+const F_BLOCKS: u32 = ${SCAN_BLOCKS_FINE}u;
 
-fn scanRange(
-  lid: u32,
-  chunk: u32,
-  total: u32,
-  countOff: u32,
-  startOff: u32,
-  cursorOff: u32,
-) {
-  let base = lid * chunk;
-  var local = 0u;
-  for (var c = 0u; c < chunk; c++) {
-    local += atomicLoad(&gridAtomics[countOff + base + c]);
-  }
-  partial[lid] = local;
+// One grid's slice of the shared buffers (offsets as in WGSL_COMMON).
+struct Span {
+  cells: u32,
+  count: u32,
+  start: u32,
+  cursor: u32,
+  block0: u32,
+  blocks: u32,
+}
+
+fn spanOf(fine: bool) -> Span {
+  if (fine) { return Span(FINE_CELLS, FC_OFF, FS_OFF, FU_OFF, C_BLOCKS, F_BLOCKS); }
+  return Span(CELLS, CC_OFF, CS_OFF, CU_OFF, 0u, C_BLOCKS);
+}
+
+var<workgroup> sh: array<u32, 256>;
+
+// Inclusive scan of one value per lane across the workgroup.
+fn wgInclusive(lid: u32, v: u32) -> u32 {
+  sh[lid] = v;
   workgroupBarrier();
-  if (lid == 0u) {
-    var acc = 0u;
-    for (var t = 0u; t < 256u; t++) {
-      let v = partial[t];
-      partial[t] = acc;
-      acc += v;
+  for (var o = 1u; o < 256u; o = o << 1u) {
+    var add = 0u;
+    if (lid >= o) { add = sh[lid - o]; }
+    workgroupBarrier();
+    sh[lid] += add;
+    workgroupBarrier();
+  }
+  return sh[lid];
+}
+
+// Dispatched with C_BLOCKS + F_BLOCKS workgroups.
+@compute @workgroup_size(256)
+fn scanReduce(
+  @builtin(local_invocation_index) lid: u32,
+  @builtin(workgroup_id) wg: vec3u,
+) {
+  let s = spanOf(wg.x >= C_BLOCKS);
+  let cell = (wg.x - s.block0) * 256u + lid;
+  let total = wgInclusive(lid, atomicLoad(&gridAtomics[s.count + cell]));
+  if (lid == 255u) { blockSums[wg.x] = total; }
+}
+
+// Dispatched with 2 workgroups: 0 = coarse, 1 = fine. Each lane owns a
+// contiguous run of block sums (fine: ~4-11, coarse: <1).
+@compute @workgroup_size(256)
+fn scanBlocks(
+  @builtin(local_invocation_index) lid: u32,
+  @builtin(workgroup_id) wg: vec3u,
+) {
+  let s = spanOf(wg.x == 1u);
+  let per = (s.blocks + 255u) / 256u;
+  let base = lid * per;
+  var sum = 0u;
+  for (var k = 0u; k < per; k++) {
+    if (base + k < s.blocks) { sum += blockSums[s.block0 + base + k]; }
+  }
+  var run = wgInclusive(lid, sum) - sum;
+  for (var k = 0u; k < per; k++) {
+    if (base + k < s.blocks) {
+      let v = blockSums[s.block0 + base + k];
+      blockSums[s.block0 + base + k] = run;
+      run += v;
     }
   }
-  workgroupBarrier();
-  var run = partial[lid];
-  for (var c = 0u; c < chunk; c++) {
-    let idx = base + c;
-    let cnt = atomicLoad(&gridAtomics[countOff + idx]);
-    gridData[startOff + idx] = run;
-    atomicStore(&gridAtomics[cursorOff + idx], run);
-    run += cnt;
-  }
-  if (lid == 255u) { gridData[startOff + total] = run; }
+  // The last lane's running total is the grid's total: the end sentinel.
+  if (lid == 255u) { gridData[s.start + s.cells] = run; }
 }
 
+// Dispatched with C_BLOCKS + F_BLOCKS workgroups.
 @compute @workgroup_size(256)
-fn scanGrid(@builtin(local_invocation_index) lid: u32) {
-  scanRange(lid, CELLS / 256u, CELLS, CC_OFF, CS_OFF, CU_OFF);
-}
-
-@compute @workgroup_size(256)
-fn scanFine(@builtin(local_invocation_index) lid: u32) {
-  scanRange(lid, FINE_CELLS / 256u, FINE_CELLS, FC_OFF, FS_OFF, FU_OFF);
+fn scanDown(
+  @builtin(local_invocation_index) lid: u32,
+  @builtin(workgroup_id) wg: vec3u,
+) {
+  let s = spanOf(wg.x >= C_BLOCKS);
+  let cell = (wg.x - s.block0) * 256u + lid;
+  let c = atomicLoad(&gridAtomics[s.count + cell]);
+  let start = blockSums[wg.x] + wgInclusive(lid, c) - c;
+  gridData[s.start + cell] = start;
+  atomicStore(&gridAtomics[s.cursor + cell], start);
 }
 `;
 
@@ -871,22 +947,14 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
   {
     let range = min(sepR * PAIR_RANGE, FINE_CELL_SZ);
     let range2 = range * range;
-    let fx = fineCoord(pos.x);
-    let fy = fineCoord(pos.y);
-    let fz = fineCoord(pos.z);
+    let fc = fineCoord(pos);
     let feOff = u32(U[4].w);
     for (var oz = -1; oz <= 1; oz++) {
       for (var oy = -1; oy <= 1; oy++) {
         for (var ox = -1; ox <= 1; ox++) {
-          let gx = fx + ox;
-          let gy = fy + oy;
-          let gz = fz + oz;
-          if (gx < 0 || gx >= FINE_D || gy < 0 || gy >= FINE_D
-              || gz < 0 || gz >= FINE_D) {
-            continue;
-          }
-          let fcell = u32(gx) + u32(gy) * u32(FINE_D)
-            + u32(gz) * u32(FINE_D * FINE_D);
+          let g = fc + vec3i(ox, oy, oz);
+          if (!fineInGrid(g)) { continue; }
+          let fcell = fineIndex(g);
           let fs = gridData[FS_OFF + fcell];
           let fcnt = gridData[FS_OFF + fcell + 1u] - fs;
           for (var k = 0u; k < fcnt; k++) {

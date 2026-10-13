@@ -16,18 +16,8 @@
  *   flash  flash color rgb, camera z
  *   crowd  nRef (expected 27-fine-cell count at the school's live mean density), crowdDim, flashSize, 0
  */
-import { GPU_TUNING } from "../params";
-
-// Fine collision grid geometry, duplicated from WGSL_COMMON in wgsl-sim.ts
-// (both derive from GPU_TUNING, so the sprite shader indexes the same cells).
-const FINE_GRID = /* wgsl */ `
-const FINE_D: i32 = ${GPU_TUNING.fineGridDim};
-const FINE_INV: f32 = ${1 / GPU_TUNING.fineCellSize};
-
-fn fineCoord(v: f32) -> i32 {
-  return clamp(i32(floor(v * FINE_INV)) + (FINE_D / 2), 0, FINE_D - 1);
-}
-`;
+// The sim's fine-grid geometry, so crowd dim indexes the same cells.
+import { WGSL_FINE_GRID } from "./wgsl-sim";
 
 export const WGSL_SPRITES = /* wgsl */ `
 struct RU {
@@ -38,7 +28,7 @@ struct RU {
   flash: vec4f,
   crowd: vec4f,
 }
-${FINE_GRID}
+${WGSL_FINE_GRID}
 
 struct Dyn {
   pe: vec4f,
@@ -136,30 +126,22 @@ fn vsSprite(
   var crowdFade = 1.0;
   let crowdDim = R.crowd.y;
   if (crowdDim > 0.0) {
-    let fx = fineCoord(pos.x);
-    let fy = fineCoord(pos.y);
-    let fz = fineCoord(pos.z);
+    let fc = fineCoord(pos);
     // Fractional position inside the own cell, [0, 1] (clamped so a fish
     // outside the grid, pinned to an edge cell by fineCoord, stays sane).
-    let gpos = pos * FINE_INV + f32(FINE_D / 2);
-    let fr = clamp(gpos - vec3f(f32(fx), f32(fy), f32(fz)), vec3f(0.0), vec3f(1.0));
+    let gpos = pos * FINE_INV + vec3f(FINE_DIM / 2);
+    let fr = clamp(gpos - vec3f(fc), vec3f(0.0), vec3f(1.0));
     var wSum = 0.0;
     var nSum = 0.0;
     for (var oz = -1; oz <= 1; oz++) {
       for (var oy = -1; oy <= 1; oy++) {
         for (var ox = -1; ox <= 1; ox++) {
-          let gx = fx + ox;
-          let gy = fy + oy;
-          let gz = fz + oz;
-          if (gx < 0 || gx >= FINE_D || gy < 0 || gy >= FINE_D
-              || gz < 0 || gz >= FINE_D) {
-            continue;
-          }
+          let g = fc + vec3i(ox, oy, oz);
+          if (!fineInGrid(g)) { continue; }
           let off = vec3f(f32(ox), f32(oy), f32(oz)) + 0.5 - fr;
           let t = max(vec3f(0.0), vec3f(1.0) - abs(off) / 1.5);
           let w = t.x * t.y * t.z;
-          // fineCellOf's indexing, per neighbor cell.
-          let c = u32(gx) + u32(gy) * u32(FINE_D) + u32(gz) * u32(FINE_D * FINE_D);
+          let c = fineIndex(g);
           nSum += w * f32(gridData[c + 1u] - gridData[c]);
           wSum += w;
         }

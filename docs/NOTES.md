@@ -52,7 +52,7 @@ rationale in place; user-facing sliders keep their v3 meaning throughout.
   quota was tried for close-range locality and any position-quantized bias
   is static in space — it accreted the school into visible sheets within a
   minute. Both calibration scales below were re-derived for it.
-- **The fine collision grid** (`fineGridDim`/`fineCellSize`/`pairPush`) —
+- **The fine collision grid** (`fineGridDims`/`fineCellSize`/`pairPush`) —
   anti-clumping (Olle's ask). Fair sampling starves close-range
   separation (an overlapped pair-mate is one of ~800 candidates for 16
   samples) and fish paired into blobs: 36% of the school had a nearest
@@ -66,7 +66,10 @@ rationale in place; user-facing sliders keep their v3 meaning throughout.
   (threatened schools pack tighter; collision noise would decohere the
   fountain), disables near the predator (wall shoves would pump fish into
   the cleared column), and bypasses the shear-glow sense — dodging a
-  neighbor is not agitation.
+  neighbor is not agitation. The grid spans ±32.4 × ±21.6 × ±14.4 u
+  (144 × 96 × 64 cells): the first 64³ cube (±14.4 u) clamped wander
+  groups on a 16:9 screen into its edge cells, and crowd dim read the
+  pile-up as density, dimming departing groups to 0.2–0.6× at x ≈ ±14.4.
 - **The hunter wedge — tried and reverted** (`wedgeAhead`/`wedgeSide`, now
   0): at speed the danger zone stretched into a lunge along the heading.
   Olle's verdict after use: fish reacting ahead of the visible cursor read

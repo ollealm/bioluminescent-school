@@ -106,6 +106,7 @@ async function mountBackend(
   panelOpen = !coarsePointer && window.innerWidth >= 768,
 ): Promise<void> {
   let application: App | null = null;
+  let device: GPUDevice | null = null;
   let label = "webgpu";
   let countMax = 100000;
   let count = 0;
@@ -120,6 +121,7 @@ async function mountBackend(
         gpuApp.lost.then(onDeviceLost);
         Object.assign(window as object, { __gpuDevice: gpuApp.device });
         application = gpuApp;
+        device = gpuApp.device;
       } catch (err) {
         console.warn("WebGPU init failed, falling back to CPU:", err);
       }
@@ -187,7 +189,7 @@ async function mountBackend(
     feel,
     // Created after every count-changing step above, so its target is the
     // count this mount actually settled on.
-    governor: label === "webgpu" ? makeGovernor(system, panel) : null,
+    governor: device ? makeGovernor(system, panel, device) : null,
   };
   Object.assign(window as object, { swarm: system });
 
@@ -228,90 +230,179 @@ async function onDeviceLost(info: GPUDeviceLostInfo): Promise<void> {
 // school keeps swimming; density compensation keeps the perceived mass
 // steady — so both directions are invisible.
 //
-// "Over budget" is measured against the display's own observed frame
-// period (rolling min), not an absolute number: on a 60 Hz display the
-// normal cadence is 16.7 ms and any absolute ~17 ms trigger is a hair
-// trigger that fires on ambient jitter (the bug that kept resetting the
-// school). A frame only counts as bad when it clearly misses vsync.
+// Frame times alone can't tell an overloaded GPU from a display the OS
+// throttled (iOS Low Power Mode, Chrome Battery Saver: 30 Hz). The old
+// governor let its frame-period estimate drift up toward slow frames to
+// avoid shedding fish under a throttle, and so it also normalized real
+// overload: a steady 25-30 fps on a 60 Hz display never stepped down. So
+// a step down now needs two signals: frames late against the display, AND
+// GPU work that nearly fills a display period. The GPU estimate is the
+// time from the frame's last submit until queue.onSubmittedWorkDone()
+// resolves (~0.2 ms when idle, 1-2 frames stale). A busy main thread also
+// delays that callback, so it can read as GPU load; a step down therefore
+// has to lower the estimate, or shedding stops.
 //
-// One per mount: it closes over that backend's system and panel.
+// One per mount: it closes over that backend's system, panel and device.
 interface Governor {
+  /** Call right after the frame's last submit. */
   tick: (rawMs: number) => void;
   /** The count the user wants, not the governed-down one. A re-mount
    * carries this, so a fresh device gets a fresh shot at full density. */
   target: () => number;
 }
 
-function makeGovernor(system: SwarmSystem, panel: DevPanel): Governor | null {
+function makeGovernor(
+  system: SwarmSystem,
+  panel: DevPanel,
+  device: GPUDevice,
+): Governor | null {
   if (countOverride) return null;
   const FLOOR = 8000;
   let target = system.getCount(); // what the user wants
   let governed = target; // what we've set
-  let minMs = 50; // rolling estimate of the display's frame period
-  let over = 0; // seconds of clearly-missed frames
-  let under = 0; // seconds of comfortable headroom
+  // The display's frame period: the fastest frame seen, but never slower
+  // than 60 Hz, so a device that boots already overloaded can't take its
+  // slow cadence for the display's. It drifts up only while the GPU is
+  // idle (a 120 Hz window moved to a 60 Hz screen), never under load.
+  let displayMs = 1000 / 60;
+  let gpuMs = 0; // smoothed GPU time per frame (outlier-clamped)
+  // The same, capped only at the stall threshold: judges whether a step
+  // down helped. gpuMs's clamp (~67 ms at 60 Hz) would hide the drop on a
+  // GPU at 100 ms/frame and block the shedding it exists for.
+  let gpuLongMs = 0;
+  let probing = false;
+  // Bumped on a stall so a probe that spans it is discarded on landing.
+  let probeEpoch = 0;
+  let over = 0; // seconds of late, GPU-bound frames
+  let under = 0; // seconds of GPU headroom
   let warmup = 5;
+  // Step history for the oscillation guard: after down → up → down within
+  // two minutes the lower level sticks for the session, so the count
+  // can't visibly breathe up and down.
+  const steps: { dir: -1 | 1; at: number }[] = [];
+  let sticky = false;
+  // Shedding has to pay off: a second after a step down the GPU estimate
+  // must have fallen. If it hasn't, the load isn't the school's (a busy
+  // main thread delaying the probe, another app on the GPU) and cutting
+  // more fish won't help, so step-downs stop until the slider moves.
+  let verify: { at: number; before: number } | null = null;
+  let shedBlocked = false;
+
+  const probe = (): void => {
+    if (probing) return;
+    probing = true;
+    const epoch = probeEpoch;
+    const start = performance.now();
+    device.queue
+      .onSubmittedWorkDone()
+      .then(() => {
+        if (epoch !== probeEpoch) return;
+        // Clamped so one outlier (a GC pause, a deferred completion) can't
+        // flip the estimate on its own.
+        const elapsed = performance.now() - start;
+        gpuMs += (Math.min(elapsed, 4 * displayMs) - gpuMs) * 0.25;
+        gpuLongMs += (Math.min(elapsed, 400) - gpuLongMs) * 0.25;
+      })
+      .catch(() => {}) // device lost: the mount (and this governor) is replaced
+      .finally(() => {
+        probing = false;
+      });
+  };
+
+  const step = (dir: -1 | 1, count: number, why: string): void => {
+    governed = count;
+    console.info(`[governor] ${why} — density ${dir < 0 ? "down" : "back up"} to ${governed}`);
+    system.resize?.(governed);
+    panel.refresh();
+    over = 0;
+    under = 0;
+    const now = performance.now();
+    if (dir < 0) verify = { at: now + 1000, before: gpuLongMs };
+    steps.push({ dir, at: now });
+    while (steps.length && now - steps[0].at > 120_000) steps.shift();
+    const n = steps.length;
+    if (n >= 3 && steps[n - 3].dir < 0 && steps[n - 2].dir > 0 && steps[n - 1].dir < 0) {
+      sticky = true;
+      console.info(`[governor] oscillating — holding ${governed} for this session`);
+    }
+  };
+
   const tick = (rawMs: number): void => {
-    if (document.hidden) {
-      over = 0;
-      under = 0;
-      return;
-    }
-    if (warmup > 0) {
-      warmup -= rawMs / 1000;
-      minMs = Math.min(minMs, rawMs);
-      return;
-    }
-    const current = system.getCount();
-    if (current !== governed) {
-      // The user took the slider — that's the new target.
-      target = current;
-      governed = current;
-      over = 0;
-      under = 0;
-      return;
-    }
     // A single long frame is a stall (tab switch, harness run, GC pause,
     // a modal), not sustained overload: one such frame would otherwise
     // count as "2 s over budget" by itself and drop density a notch per
     // hiccup (observed: 25k → 9k over four console harness runs). Only
-    // sustained misses accumulate.
-    if (rawMs > 400) {
+    // sustained misses accumulate. A hidden tab defers GPU completion, so
+    // neither may feed the GPU estimate: a probe spanning it is dropped.
+    if (document.hidden || rawMs > 400) {
       over = 0;
       under = 0;
+      gpuMs = 0;
+      gpuLongMs = 0;
+      probeEpoch++;
+      // The estimate restarts from zero: judge the last step on fresh samples.
+      if (verify) verify.at = performance.now() + 1000;
       return;
     }
-    minMs = Math.min(minMs, rawMs);
-    minMs += (rawMs - minMs) * 0.005; // relax upward slowly
+    probe();
+    if (warmup > 0) {
+      warmup -= rawMs / 1000;
+      displayMs = Math.min(displayMs, rawMs);
+      return;
+    }
+    const current = system.getCount();
+    if (current !== governed) {
+      // The user took the slider — that's the new target, and a fresh start.
+      target = current;
+      governed = current;
+      over = 0;
+      under = 0;
+      steps.length = 0;
+      sticky = false;
+      verify = null;
+      shedBlocked = false;
+      return;
+    }
+    if (verify && performance.now() >= verify.at) {
+      if (gpuLongMs > 0.9 * verify.before) {
+        shedBlocked = true;
+        console.info(
+          `[governor] fewer fish didn't lower GPU time (~${gpuLongMs.toFixed(1)} ms) — holding ${governed}`,
+        );
+      }
+      verify = null;
+    }
+    // GPU-bound: the GPU work nearly fills a display period, so fewer fish
+    // would let frames land on time. Below that, late frames come from
+    // something shedding can't fix (a 30 Hz cap with 12 ms of work).
+    const gpuBound = gpuMs > 0.8 * displayMs;
+    if (rawMs < displayMs) displayMs = rawMs;
+    else if (!gpuBound) displayMs = Math.min(1000 / 60, displayMs + (rawMs - displayMs) * 0.005);
     const dtS = rawMs / 1000;
-    // "Bad" = worse than ~half the display's best rate (with margin so a
-    // ProMotion 120→60 Hz downshift never reads as overload).
-    if (rawMs > minMs * 1.8 + 3) {
+    // Late = over 1.5 display periods and under 45 fps, so 60 fps on a
+    // 120 Hz display is never late.
+    const late = rawMs > Math.max(displayMs * 1.5, 1000 / 45);
+    if (late && gpuBound) {
       over += dtS;
       under = 0;
-    } else if (rawMs < minMs * 1.25 + 0.5) {
-      under += dtS;
-      over = Math.max(0, over - dtS);
     } else {
       over = Math.max(0, over - dtS);
-      under = 0;
+      // Headroom: the GPU would fit this frame's work in half a display
+      // period, whatever the cadence (a throttled display still has room).
+      under = gpuMs < 0.5 * displayMs ? under + dtS : 0;
     }
-    if (over > 2 && governed > FLOOR) {
-      governed = Math.max(FLOOR, Math.round((governed * 0.78) / 500) * 500);
-      console.info(
-        `[governor] missing vsync (~${rawMs.toFixed(0)} ms vs ${minMs.toFixed(1)} ms base) — density down to ${governed}`,
+    if (over > 2 && governed > FLOOR && !verify && !shedBlocked) {
+      step(
+        -1,
+        Math.max(FLOOR, Math.round((governed * 0.78) / 500) * 500),
+        `late frames (~${rawMs.toFixed(0)} ms, GPU ~${gpuMs.toFixed(1)} ms)`,
       );
-      system.resize?.(governed);
-      panel.refresh();
-      over = 0;
-      under = 0;
-    } else if (under > 20 && governed < target) {
-      governed = Math.min(target, Math.round((governed * 1.15) / 500) * 500);
-      console.info(`[governor] headroom — density back up to ${governed}`);
-      system.resize?.(governed);
-      panel.refresh();
-      over = 0;
-      under = 0;
+    } else if (under > 20 && governed < target && !sticky) {
+      step(
+        1,
+        Math.min(target, Math.round((governed * 1.15) / 500) * 500),
+        `headroom (GPU ~${gpuMs.toFixed(1)} ms)`,
+      );
     }
   };
   return {

@@ -19,6 +19,9 @@ import { baseStops, flashFromBase, hexToRgb, mulberry32 } from "../color";
 import { SNAPSHOT_VERSION, type Snapshot, type SwarmSystem } from "../system";
 import { SwarmCamera } from "./camera";
 import {
+  FINE_CELLS,
+  SCAN_BLOCKS_COARSE,
+  SCAN_BLOCKS_FINE,
   U_VEC4S,
   WGSL_GRID,
   WGSL_REDUCE,
@@ -52,7 +55,6 @@ const EV_SHIVER = 8;
 
 const D = TUNING.gridDim;
 const CELLS = D * D * D;
-const FINE_CELLS = GPU_TUNING.fineGridDim ** 3;
 const MAX_EVENTS = GPU_TUNING.maxEvents;
 const EVENT_STRIDE = 16; // floats/u32s per event (4 × vec4)
 const WG = GPU_TUNING.workgroupSize;
@@ -120,16 +122,20 @@ export class GpuSwarm implements SwarmSystem {
   private gridAtomics!: GPUBuffer;
   /** Cell starts + sorted entries for both grids (u32; layout in wgsl-sim). */
   private gridData!: GPUBuffer;
+  /** Per-block sums for the grid scans (coarse blocks, then fine). */
+  private scanBlocksB!: GPUBuffer;
   private eventsB!: GPUBuffer;
   private uniformsB!: GPUBuffer;
   private centroidB!: GPUBuffer;
   private parity = 0; // dyn[parity] is the read side this frame
 
+  private scanLayout!: GPUBindGroupLayout;
   private pipelines!: {
     clear: GPUComputePipeline;
     count: GPUComputePipeline;
-    scan: GPUComputePipeline;
-    scanFine: GPUComputePipeline;
+    scanReduce: GPUComputePipeline;
+    scanBlocks: GPUComputePipeline;
+    scanDown: GPUComputePipeline;
     scatter: GPUComputePipeline;
     resolve: GPUComputePipeline;
     sim: GPUComputePipeline;
@@ -140,7 +146,6 @@ export class GpuSwarm implements SwarmSystem {
     clear: GPUBindGroup;
     count: [GPUBindGroup, GPUBindGroup];
     scan: GPUBindGroup;
-    scanFine: GPUBindGroup;
     scatter: [GPUBindGroup, GPUBindGroup];
     resolve: [GPUBindGroup, GPUBindGroup];
     sim: [GPUBindGroup, GPUBindGroup];
@@ -454,19 +459,40 @@ export class GpuSwarm implements SwarmSystem {
 
   private createPipelines(): void {
     const dev = this.device;
-    const mk = (code: string, entry: string, label: string) =>
+    const mk = (
+      code: string,
+      entry: string,
+      label: string,
+      layout: GPUPipelineLayout | "auto" = "auto",
+    ) =>
       dev.createComputePipeline({
         label,
-        layout: "auto",
+        layout,
         compute: { module: this.makeModule(code, label), entryPoint: entry },
       });
+
+    // The three scan passes share one explicit layout so a single bind group
+    // serves them all (an auto layout would drop the bindings a pass skips).
+    const rw = (binding: number): GPUBindGroupLayoutEntry => ({
+      binding,
+      visibility: GPUShaderStage.COMPUTE,
+      buffer: { type: "storage" },
+    });
+    this.scanLayout = dev.createBindGroupLayout({
+      label: "scan",
+      entries: [rw(0), rw(1), rw(2)],
+    });
+    const scanPipelineLayout = dev.createPipelineLayout({
+      bindGroupLayouts: [this.scanLayout],
+    });
 
     const gridModCode = WGSL_GRID;
     this.pipelines = {
       clear: mk(gridModCode, "clearGrid", "clearGrid"),
       count: mk(gridModCode, "countGrid", "countGrid"),
-      scan: mk(WGSL_SCAN, "scanGrid", "scanGrid"),
-      scanFine: mk(WGSL_SCAN, "scanFine", "scanFine"),
+      scanReduce: mk(WGSL_SCAN, "scanReduce", "scanReduce", scanPipelineLayout),
+      scanBlocks: mk(WGSL_SCAN, "scanBlocks", "scanBlocks", scanPipelineLayout),
+      scanDown: mk(WGSL_SCAN, "scanDown", "scanDown", scanPipelineLayout),
       scatter: mk(gridModCode, "scatterGrid", "scatterGrid"),
       resolve: mk(WGSL_RESOLVE, "resolveEvents", "resolveEvents"),
       sim: mk(WGSL_SIM, "simStep", "simStep"),
@@ -513,6 +539,10 @@ export class GpuSwarm implements SwarmSystem {
     this.selfB = mkStorage(this.capacity * 32, "self");
     this.statB = mkStorage(this.capacity * 32, "stat");
     this.gridAtomics = mkStorage(2 * (CELLS + FINE_CELLS) * 4, "gridAtomics");
+    this.scanBlocksB = mkStorage(
+      (SCAN_BLOCKS_COARSE + SCAN_BLOCKS_FINE) * 4,
+      "scanBlocks",
+    );
     // fine starts + coarse starts + coarse entries + fine entries.
     this.gridData = mkStorage(
       (FINE_CELLS + 1 + CELLS + 1 + 2 * this.capacity) * 4,
@@ -726,8 +756,12 @@ export class GpuSwarm implements SwarmSystem {
         dynIn,
         this.gridAtomics,
       ]),
-      scan: bg(p.scan, [this.gridAtomics, this.gridData]),
-      scanFine: bg(p.scanFine, [this.gridAtomics, this.gridData]),
+      scan: dev.createBindGroup({
+        layout: this.scanLayout,
+        entries: [this.gridAtomics, this.gridData, this.scanBlocksB].map(
+          (buffer, binding) => ({ binding, resource: { buffer } }),
+        ),
+      }),
       scatter: both(p.scatter, (dynIn) => [
         this.uniformsB,
         dynIn,
@@ -769,6 +803,7 @@ export class GpuSwarm implements SwarmSystem {
       this.statB,
       this.gridAtomics,
       this.gridData,
+      this.scanBlocksB,
       this.eventsB,
       this.uniformsB,
       this.centroidB,
@@ -1500,8 +1535,9 @@ export class GpuSwarm implements SwarmSystem {
     const nWg256 = Math.ceil(this.count / 256);
     run(this.pipelines.clear, g.clear, Math.ceil((CELLS + FINE_CELLS) / 256));
     run(this.pipelines.count, g.count[pr], nWg256);
-    run(this.pipelines.scan, g.scan, 1);
-    run(this.pipelines.scanFine, g.scanFine, 1);
+    run(this.pipelines.scanReduce, g.scan, SCAN_BLOCKS_COARSE + SCAN_BLOCKS_FINE);
+    run(this.pipelines.scanBlocks, g.scan, 2); // one workgroup per grid
+    run(this.pipelines.scanDown, g.scan, SCAN_BLOCKS_COARSE + SCAN_BLOCKS_FINE);
     run(this.pipelines.scatter, g.scatter[pr], nWg256);
     if (batch.length > 0) run(this.pipelines.resolve, g.resolve[pr], 1);
     run(this.pipelines.sim, g.sim[pr], Math.ceil(this.count / WG));

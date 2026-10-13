@@ -68,13 +68,15 @@ function pcg(v: number): number {
   return ((w >>> 22) ^ w) >>> 0;
 }
 
-// Fine collision grid (GPU_TUNING.fineGridDim/fineCellSize): close-range
+// Fine collision grid (FD cells per axis of GPU_TUNING.fineCellSize): close-range
 // personal space, every overlap seen every frame. v3's flocking scan stopped
 // at the first 16 neighbors in cell order; in a dense school those all sat
 // in one corner cell, separation then pushes every fish the same way (no
 // divergence, so it can't hold pressure) and herd/sheet/contract crushed
-// the school to a 1 u pancake. Same fix and constants as the GPU kernel.
-const FD = GPU_TUNING.fineGridDim;
+// the school to a 1 u pancake. Same fix and cell size as the GPU kernel;
+// the CPU keeps the original 64³ cube (±14.4 u) instead of the GPU's wider
+// per-axis grid, whose 885k cells would cost a CPU clear every frame.
+const FD = 64;
 const FD2 = FD * FD;
 const FCELLS = FD * FD * FD;
 const F_INV = 1 / GPU_TUNING.fineCellSize;

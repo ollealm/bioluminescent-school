@@ -167,7 +167,7 @@ export const GPU_TUNING = {
   pairPushRange: 0.3,
   /**
    * The collision grid: a second, fine counting-sort grid (cells of
-   * fineCellSize world units, fineGridDim per axis) built each frame beside
+   * fineCellSize world units, fineGridDims cells along x, y, z) built each frame beside
    * the perception grid, used ONLY for close-range personal space. Within
    * pairPushRange×sepR (clamped to one fine cell), every real overlap is
    * detected *every frame, symmetrically* — the continuous response v3 got
@@ -178,8 +178,17 @@ export const GPU_TUNING = {
    * ~0.5–1.5 fish, so the pass costs ~a dozen position reads per particle
    * and three small dispatches. pairPush is now a continuous force in the
    * v3 separation-clamp family (~21 u/s²), not a rarity-compensated kick.
+   *
+   * The extent must cover everywhere a visible fish can be: a fish outside
+   * is clamped into the edge cells, which then pile up every fish beyond
+   * that face. The crowd dim (wgsl-render.ts) reads that pile-up as density.
+   * A 64³ cube (±14.4 u) dimmed wander groups to 0.2-0.6× brightness as
+   * they crossed x ≈ ±14.4, on screen at 16:9 (visible to ±13.5·aspect).
+   * x ±32.4 covers aspects to ~2.4:1, y ±21.6 covers portrait phones and
+   * wanderers (farR ≈ 2.1 × containRadius), and z keeps ±14.4 for roamDepth
+   * 1 and sheet 0. The total must be a multiple of 256 (the scan block).
    */
-  fineGridDim: 64,
+  fineGridDims: [144, 96, 64] as const,
   fineCellSize: 0.45,
   /**
    * The hunter wedge: at speed the danger zone would elongate along the
