@@ -64,18 +64,24 @@ export const GPU_TUNING = {
    * reads as *finer grain*, not just dimmer motes.
    */
   sizeCompExp: 0,
-  opacityCompExp: 0,
+  opacityCompExp: 0.35,
   /**
-   * Both exponents are 0 since 2026-10-13: the owner retired the
-   * compensation. In practice it made Size and Opacity mean different
-   * things at every count (a phone at 12k drew bigger, brighter sprites
-   * than a desktop at 25k, which read as blur), and the CPU engine never
-   * had it, so its values were tuned by hand anyway. Sliders are now
-   * literal at any count; a feel's `cpu` block carries per-backend values.
-   * The machinery stays for experiments.
+   * Size compensation is 0 since 2026-10-13: scaling sprites with count
+   * made a phone at 12k draw bigger sprites than a desktop at 25k, which
+   * read as blur. Opacity compensation stays (owner: "opacity makes
+   * sense, size doesn't"), relative to opacityRefCount. The CPU engine
+   * never had either; its values live in a feel's `cpu` block.
    */
+  /**
+   * The count the Opacity slider is literal at. Opacity (not size) scales
+   * by (opacityRefCount / count)^opacityCompExp: 0.4 at 25k reads as ~0.52
+   * at 12k and ~0.8-1.0 in the low thousands, which is what the owner
+   * found right by hand. Separate from referenceCount (2,600), which still
+   * scales v3's absolute counts (scatter seeds, wander group size).
+   */
+  opacityRefCount: 25000,
   /** Compensation is clamped so tiny counts don't blow up (≤ this factor). */
-  maxComp: 2.0,
+  maxComp: 3.0,
   /**
    * HDR shoulder tonemap knee: below this the transfer is identity, above it
    * brightness compresses asymptotically to 1 while preserving hue. This is

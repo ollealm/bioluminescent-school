@@ -175,8 +175,11 @@ export class GpuRenderer {
     // Density-compensated brightness budget (HANDOFF §5): the tuned params
     // describe the look at referenceCount; size²·opacity scales down as the
     // count scales up, so the school reads equally bright at any density.
+    // Owner's verdict (2026-10-13): compensate opacity only, never size,
+    // and relative to the count the sliders are tuned at (25k): the
+    // Opacity slider is literal at 25k, ~1.3x at 12k, ~2x at 2.5k.
     const P = sys.params;
-    const comp = GPU_TUNING.referenceCount / Math.max(64, sys.getCount());
+    const comp = GPU_TUNING.opacityRefCount / Math.max(64, sys.getCount());
     const sizeComp = Math.min(GPU_TUNING.maxComp, Math.pow(comp, GPU_TUNING.sizeCompExp));
     const opComp = Math.min(GPU_TUNING.maxComp, Math.pow(comp, GPU_TUNING.opacityCompExp));
 
