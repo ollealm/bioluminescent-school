@@ -118,7 +118,11 @@ export class GpuRenderer {
   }
 
   resize(cssWidth: number, cssHeight: number, dpr: number): void {
-    this.dpr = Math.min(dpr, 2);
+    // Phones are 3x: capping at 2 rendered an iPhone at two thirds of its
+    // pixels and the upscale read as soft. The WebGPU path affords 3x
+    // (25k sprites at ~1200x2600 is well inside budget); the governor
+    // still owns the count if it isn't.
+    this.dpr = Math.min(dpr, 3);
     const w = Math.max(1, Math.floor(cssWidth * this.dpr));
     const h = Math.max(1, Math.floor(cssHeight * this.dpr));
     this.canvas.width = w;
