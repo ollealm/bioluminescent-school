@@ -39,6 +39,42 @@
       .brand:hover { color: rgba(190, 255, 220, 1); }
       .brand.copied { color: rgba(190, 255, 220, 0.55); }
       .hint { display: none; }
+      /* The document: icon top-right, floating transparent note with thin borders. */
+      .doc-toggle {
+        position: fixed; top: 20px; right: 24px; z-index: 6;
+        width: 28px; height: 28px; padding: 4px;
+        background: none; border: 0; cursor: pointer;
+        color: rgba(190, 255, 220, 0.8);
+      }
+      .doc-toggle:hover, .doc-toggle[aria-expanded="true"] { color: rgba(190, 255, 220, 1); }
+      .doc-toggle svg { width: 100%; height: 100%; display: block; }
+      .doc {
+        position: fixed; top: 58px; right: 24px; z-index: 6;
+        width: min(280px, calc(100vw - 48px));
+        padding: 18px 22px 20px;
+        border: 1px solid rgba(190, 255, 220, 0.55);
+        background: transparent;
+        color: rgba(190, 255, 220, 0.8);
+        font-size: 13px; line-height: 1.9; letter-spacing: 0.04em;
+        cursor: grab; touch-action: none; user-select: none;
+      }
+      .doc.dragging { cursor: grabbing; }
+      .doc[hidden] { display: none; }
+      .doc ol { list-style: none; counter-reset: n; }
+      .doc li { counter-increment: n; }
+      .doc li::before { content: counter(n, decimal-leading-zero) "  "; opacity: 0.45; }
+      .doc a {
+        color: rgba(190, 255, 220, 0.8); text-decoration: none;
+        border-bottom: 1px solid rgba(190, 255, 220, 0.25); cursor: pointer;
+      }
+      .doc a:hover { color: rgba(190, 255, 220, 1); border-bottom-color: rgba(190, 255, 220, 0.8); }
+      .doc-close {
+        position: absolute; top: 6px; right: 8px;
+        background: none; border: 0; padding: 4px 6px; cursor: pointer;
+        color: rgba(190, 255, 220, 0.55); font: inherit; font-size: 15px; line-height: 1;
+      }
+      .doc-close:hover { color: rgba(190, 255, 220, 1); }
+      @media (max-width: 640px) { .doc-toggle { top: 14px; right: 16px; } .doc { top: 52px; right: 16px; } }
       .blm-toggle { display: none !important; }
       @media (max-width: 640px) {
         .brand { top: 16px; left: 18px; }
@@ -50,6 +86,23 @@
     <div id="app"></div>
     <button class="overlay brand" id="mail" type="button" title="copy address">hi@olle.work</button>
     <span id="backend-tag" hidden></span>
+    <button class="doc-toggle" id="doc-toggle" type="button" aria-label="open notes" aria-expanded="false" aria-controls="doc">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M6 3.5h8.5L19 8v12.5H6z"/><path d="M14.5 3.5V8H19"/>
+        <path d="M9 12h7M9 15h7M9 18h4.5"/>
+      </svg>
+    </button>
+    <div class="doc" id="doc" hidden role="dialog" aria-label="notes">
+      <button class="doc-close" id="doc-close" type="button" aria-label="close">×</button>
+      <ol>
+        <!-- TODO(Olle): the five pages. Placeholders until then. -->
+        <li><a href="#">Project one</a></li>
+        <li><a href="#">Project two</a></li>
+        <li><a href="#">Project three</a></li>
+        <li><a href="#">Project four</a></li>
+        <li><a href="#">Project five</a></li>
+      </ol>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

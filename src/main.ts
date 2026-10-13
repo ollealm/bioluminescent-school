@@ -1,4 +1,5 @@
 import { DevPanel } from "./DevPanel";
+import { installDoc } from "./doc";
 import { installFeelSwitcher, type FeelSwitcher } from "./feel";
 import { cpuSpec, gpuSpec, makeGovernor, type Governor, type GovernorSpec } from "./governor";
 import type { FilmstripOptions } from "./review";
@@ -245,7 +246,7 @@ window.addEventListener("pointermove", (e) => {
 window.addEventListener("pointerdown", (e) => {
   if (pauseDepth > 0) return;
   // Clicks on the panel shouldn't detonate the swarm.
-  if ((e.target as HTMLElement).closest?.(".blm-panel, .blm-toggle, #mail")) return;
+  if ((e.target as HTMLElement).closest?.(".blm-panel, .blm-toggle, #mail, #doc, #doc-toggle")) return;
   live?.system.updateMousePosition(toNDC(e));
   live?.system.burst();
 });
@@ -349,6 +350,8 @@ Object.assign(window as object, {
   __sweep: async (opts?: FilmstripOptions) =>
     (await import("./review")).runSweep(opts),
 });
+
+installDoc();
 
 // The address in the corner copies itself; "copied" shows for 3 s.
 const mail = document.getElementById("mail");
