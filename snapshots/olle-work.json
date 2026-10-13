@@ -31,7 +31,7 @@
     "groupSize": 300,
     "wanderPull": 2.0,
     "returnPull": 2.8,
-    "mouseRadius": 2.2,
+    "mouseRadius": 1.7,
     "repelForce": 90,
     "splash": 0.6,
     "fleeForce": 60,
@@ -60,7 +60,7 @@
     "herd": 0.2,
     "sheet": 0.4,
     "shiver": 1.0,
-    "evade": 0.5,
+    "evade": 0.2,
     "roamDepth": 0.1
   }
 }
