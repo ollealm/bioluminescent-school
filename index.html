@@ -2,11 +2,15 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <!-- iOS Safari tints the status bar and toolbar from theme-color (white without it). -->
+    <meta name="theme-color" content="#010407" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>bioluminescent swarm · gpu fork</title>
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
-      html, body { height: 100%; overflow: hidden; }
+      html, body { height: 100%; overflow: hidden; background: #010407; }
       body {
         background:
           radial-gradient(120% 90% at 50% 45%, #02160f 0%, #010a08 45%, #010407 100%);
