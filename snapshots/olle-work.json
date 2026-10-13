@@ -49,7 +49,7 @@
     "opacity": 0.85,
     "twinkle": 0.55,
     "motionGlow": 0.5,
-    "stretch": 1.3,
+    "stretch": 0.5,
     "collapse": 1.0,
     "shape": 0.9,
     "bite": 0.7,
