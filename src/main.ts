@@ -43,6 +43,10 @@ const backendTag = document.getElementById("backend-tag");
 const query = new URLSearchParams(location.search);
 const forced = query.get("backend");
 const countOverride = Number(query.get("count")) || 0;
+// ?alive=1 (or window.__keepAlive, which the filmstrip sets while it runs)
+// keeps the sim stepping in a hidden tab whose rAF is suspended: test and
+// agent panes report hidden but still need a live school.
+const keepAliveParam = query.get("alive") === "1";
 
 // Count is decided by input type only. Width is a layout fact, not a device
 // fact: a hidden tab, embed or preview pane can report a narrow window at
@@ -266,10 +270,28 @@ function makeGovernor(
   // idle (a 120 Hz window moved to a 60 Hz screen), never under load.
   let displayMs = 1000 / 60;
   let gpuMs = 0; // smoothed GPU time per frame (outlier-clamped)
-  // The same, capped only at the stall threshold: judges whether a step
-  // down helped. gpuMs's clamp (~67 ms at 60 Hz) would hide the drop on a
-  // GPU at 100 ms/frame and block the shedding it exists for.
-  let gpuLongMs = 0;
+  // Recent raw samples (capped only at the stall threshold), for the shed
+  // check's window medians: gpuMs's clamp (~67 ms at 60 Hz) would hide the
+  // drop on a GPU at 100 ms/frame, a smoothed snapshot is too noisy to judge
+  // a few-percent drop, and a mean lets one GC pause in the window fake a
+  // failed step and block shedding for the session.
+  const RING = 256;
+  const sampleAt = new Float64Array(RING);
+  const sampleMs = new Float64Array(RING);
+  let ringHead = 0;
+  let ringLen = 0;
+  const windowMs: number[] = [];
+  const medianSince = (t: number): { median: number; n: number } => {
+    windowMs.length = 0;
+    for (let k = 0; k < ringLen; k++) {
+      const idx = (ringHead - 1 - k + RING) % RING;
+      if (sampleAt[idx] < t) break;
+      windowMs.push(sampleMs[idx]);
+    }
+    windowMs.sort((a, b) => a - b);
+    const n = windowMs.length;
+    return { median: n > 0 ? windowMs[n >> 1] : 0, n };
+  };
   let probing = false;
   // Bumped on a stall so a probe that spans it is discarded on landing.
   let probeEpoch = 0;
@@ -281,11 +303,13 @@ function makeGovernor(
   // can't visibly breathe up and down.
   const steps: { dir: -1 | 1; at: number }[] = [];
   let sticky = false;
-  // Shedding has to pay off: a second after a step down the GPU estimate
-  // must have fallen. If it hasn't, the load isn't the school's (a busy
-  // main thread delaying the probe, another app on the GPU) and cutting
-  // more fish won't help, so step-downs stop until the slider moves.
-  let verify: { at: number; before: number } | null = null;
+  // Shedding has to pay off: GPU time over the second after a step down
+  // must fall by at least a quarter of the count cut (a 22% cut: 5.5%;
+  // fixed costs like the tonemap pass don't shrink with the count). If it
+  // doesn't, the load isn't the school's (a busy main thread delaying the
+  // probe, another app on the GPU) and cutting more fish won't help, so
+  // step-downs stop until the slider moves.
+  let verify: { from: number; at: number; before: number; cut: number } | null = null;
   let shedBlocked = false;
 
   const probe = (): void => {
@@ -299,9 +323,13 @@ function makeGovernor(
         if (epoch !== probeEpoch) return;
         // Clamped so one outlier (a GC pause, a deferred completion) can't
         // flip the estimate on its own.
-        const elapsed = performance.now() - start;
+        const now = performance.now();
+        const elapsed = now - start;
         gpuMs += (Math.min(elapsed, 4 * displayMs) - gpuMs) * 0.25;
-        gpuLongMs += (Math.min(elapsed, 400) - gpuLongMs) * 0.25;
+        sampleAt[ringHead] = now;
+        sampleMs[ringHead] = Math.min(elapsed, 400);
+        ringHead = (ringHead + 1) % RING;
+        ringLen = Math.min(RING, ringLen + 1);
       })
       .catch(() => {}) // device lost: the mount (and this governor) is replaced
       .finally(() => {
@@ -310,14 +338,22 @@ function makeGovernor(
   };
 
   const step = (dir: -1 | 1, count: number, why: string): void => {
+    const now = performance.now();
+    if (dir < 0) {
+      const before = medianSince(now - 1000);
+      verify = {
+        from: now + 250, // let the resize land before judging
+        at: now + 1250,
+        before: before.n > 0 ? before.median : gpuMs,
+        cut: 1 - count / governed,
+      };
+    }
     governed = count;
     console.info(`[governor] ${why} — density ${dir < 0 ? "down" : "back up"} to ${governed}`);
     system.resize?.(governed);
     panel.refresh();
     over = 0;
     under = 0;
-    const now = performance.now();
-    if (dir < 0) verify = { at: now + 1000, before: gpuLongMs };
     steps.push({ dir, at: now });
     while (steps.length && now - steps[0].at > 120_000) steps.shift();
     const n = steps.length;
@@ -338,10 +374,13 @@ function makeGovernor(
       over = 0;
       under = 0;
       gpuMs = 0;
-      gpuLongMs = 0;
+      ringLen = 0;
       probeEpoch++;
-      // The estimate restarts from zero: judge the last step on fresh samples.
-      if (verify) verify.at = performance.now() + 1000;
+      // Judge a pending step on fresh samples after the stall.
+      if (verify) {
+        verify.from = performance.now() + 250;
+        verify.at = verify.from + 1000;
+      }
       return;
     }
     probe();
@@ -364,10 +403,11 @@ function makeGovernor(
       return;
     }
     if (verify && performance.now() >= verify.at) {
-      if (gpuLongMs > 0.9 * verify.before) {
+      const after = medianSince(verify.from);
+      if (after.n > 0 && after.median > verify.before * (1 - 0.25 * verify.cut)) {
         shedBlocked = true;
         console.info(
-          `[governor] fewer fish didn't lower GPU time (~${gpuLongMs.toFixed(1)} ms) — holding ${governed}`,
+          `[governor] fewer fish didn't lower GPU time (${verify.before.toFixed(1)} → ${after.median.toFixed(1)} ms) — holding ${governed}`,
         );
       }
       verify = null;
@@ -476,7 +516,8 @@ function body(now: number): void {
   live.governor?.tick(rawMs);
 
   frames++;
-  fpsTime += dt;
+  // Wall time, not the clamped sim dt: under 20 fps the clamp read as 20.
+  fpsTime += rawMs / 1000;
   if (fpsTime >= 0.5) {
     live.panel.setFps(frames / fpsTime);
     frames = 0;
@@ -557,11 +598,14 @@ if (mail) {
 mountBackend(true)
   .then(() => {
     requestAnimationFrame(frame);
-    // Headless/background contexts suspend rAF; keep the creature living on
-    // a timer that yields the moment rAF ticks again.
+    // Headless contexts suspend rAF; keep the creature living on a timer
+    // that yields the moment rAF ticks again. Not in a hidden tab (a
+    // background tab nobody sees should cost nothing) unless kept alive.
     setInterval(() => {
       const now = performance.now();
-      if (now - lastRaf > 250) body(now);
+      const keepAlive =
+        keepAliveParam || (window as { __keepAlive?: boolean }).__keepAlive === true;
+      if (now - lastRaf > 250 && (!document.hidden || keepAlive)) body(now);
     }, 1000 / 60);
   })
   .catch((err) => {

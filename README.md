@@ -45,7 +45,9 @@ the CPU fallback.
 - URL parameters: `?feel=<name>` boots a feel (default `olle-work`, the
   shipped one; `site-default` is the v3 state), `?backend=cpu` forces the
   fallback, `?count=N` overrides the particle count (default 25,000 on
-  desktop, 12,000 on touch devices).
+  desktop, 12,000 on touch devices). A hidden tab stops simulating;
+  `?alive=1` keeps it running for test and agent panes that report hidden
+  (the filmstrip tool does this for itself).
 
 ## Architecture
 
@@ -93,8 +95,11 @@ recruitment, scatter, strike, shiver, spontaneous ignitions) travel through a
 carry a particle index; a one-workgroup resolve pre-pass fills in the
 position on the GPU, so scheduling never waits on a readback.
 
-**Degrading.** A frame-time governor steps the count down on weaker GPUs
-(floor 8,000; only sustained misses count, not a single stalled frame).
+**Degrading.** A governor steps the count down on weaker GPUs (floor
+8,000) when frames run late *and* the GPU is busy for most of each one,
+so a display the OS caps at 30 Hz sheds nothing. A step must lower GPU
+time or shedding stops, and a down/up/down within two minutes holds the
+lower count for the session; a single stalled frame never counts.
 No WebGPU, or a software adapter, boots the CPU engine. A lost GPU device
 re-mounts the backend once with the current state carried over, then
 falls back to the CPU.
@@ -133,25 +138,34 @@ without watching it move; the image above is one. `window.swarm` and
 
 ## Acceptance
 
-The HANDOFF §6 probes, latest run: GPU at 25,000 with the shipped
-`olle-work` feel (2026-10-12, 30 s mood run) against the untouched v3
-reference.
+The HANDOFF §6 probes with the shipped `olle-work` feel, 2026-10-13:
+medians of 5 harness runs (30 s mood runs) on the GPU at 25,000 and the
+CPU fallback at 2,500, against the untouched v3 reference. The cascade
+probe bursts at the school's mean position with wanderers and shivers off
+and counts a cascade dead when no fish can ignite another; the v3 column
+was measured with the earlier burst at a fixed screen point.
 
-| Probe | v3 CPU @2,600 | GPU @25,000 | Bar |
-| --- | --- | --- | --- |
-| cascade growth (frac of school at ~0/⅓/⅔/1 s) | .005 / .031 / .099 / .240 | .022 / .095 / .209 / .275 | grows, then dies |
-| cascade extinguishes ≤ 5 s | true (fails ~1 in 4 runs) | true | true |
-| outburst outward coherence | 0.86 | 0.97 | ≳ 0.7 |
-| inburst inward coherence | 0.49 | 0.91 | ≳ 0.55 |
-| fountain (mean dot vs travel) | −0.58 | −0.27 | < −0.2 |
-| predator vacancy @1.5 s / 3 s | 0 / 8 | 0 / 67 | ~0 |
-| panic reach | 0.22 | 0.39 | ≳ 0.2 |
-| mean-speed swing | 2.6× | 3.1× | ≥ 2× |
-| peak hot-glow (frac) | 0.037 | 0.018 | small |
+| Probe | v3 CPU @2,600 | GPU @25,000 | CPU fallback @2,500 | Bar |
+| --- | --- | --- | --- | --- |
+| cascade growth (frac of school at ~0/⅓/⅔/1 s) | .005 / .031 / .099 / .240 | .089 / .310 / .405 / .222 | .098 / .496 / .398 / .100 | grows, then dies |
+| cascade extinguishes ≤ 5 s | true (fails ~1 in 4 runs) | 5/5 | 5/5 | true |
+| outburst outward coherence | 0.86 | 0.80 | 0.80 | ≳ 0.7 |
+| inburst inward coherence | 0.49 | 0.63 | 0.84 | ≳ 0.55 |
+| fountain (mean dot vs travel) | −0.58 | −0.24 | −0.22 | < −0.2 |
+| predator vacancy @1.5 s / 3 s | 0 / 8 | 0 / 8 | 1 / 6 | ~0 |
+| panic reach | 0.22 | 0.01 | 0.02 | ≳ 0.2 |
+| mean-speed swing | 2.6× | 2.6× | 2.4× | ≥ 2× |
+| peak hot-glow (frac) | 0.037 | 0.11 | 0.031 | small |
 
-Perf on Apple silicon (Metal 3, Chrome): 1.75 ms per step at 25,000;
-4.1 ms sim / 5.3 ms sim+render at 50,000 (the v3 CPU reference spends
-5.3 ms on 2,600); 100,000 runs at 12.5 ms. Earlier runs, including the
+Panic reach misses its bar and the GPU's hot glow reads high on the
+current feel; both measure the same on the code before the 2026-10-13
+rounds, so they belong to the feel (its fast fear decay and maxSpeed 5),
+not to the engine.
+
+Perf on Apple silicon (M2 Max, Chrome, 2026-10-13): a simulation step
+takes 0.64 ms at 25,000, 1.14 ms at 50,000 and 2.35 ms at 100,000; the
+render adds ~0.2 ms at 2880×1800. The CPU fallback steps 2,500 fish in
+~5.7 ms (the v3 reference spent 5.3 ms on 2,600). Earlier runs, including the
 original 50,000-particle acceptance table, are in
 [`docs/NOTES.md`](docs/NOTES.md#4-measurements).
 

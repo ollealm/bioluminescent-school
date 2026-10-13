@@ -833,10 +833,8 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
 
   // ---- Neighbor pass: boids accumulators + contagion pressure ----
   // Fair sampling under the neighbor cap: candidates are stratified across
-  // the 27 cells by population, cell order and in-cell start are
-  // hash-rotated per particle per frame, so the accepted subset is an
-  // unbiased sample of the fish around us and anisotropy averages out
-  // (HANDOFF §5).
+  // the 27 cells by population, and the accepted neighbors are a reservoir
+  // sample of every in-range candidate (HANDOFF §5).
   var sep = vec3f(0.0);
   var hardPush = vec3f(0.0);
   var coh = vec3f(0.0);
@@ -852,20 +850,22 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
   let cz = cellCoord(pos.z, invCell);
   let rot = pcg(i ^ pcg(u32(U[0].z) * 2654435761u));
 
-  // Stratified fair sweep over the 27-cell neighborhood. The first sweep
-  // accepted the first 16 in-range fish in a hash-rotated cell order — but
-  // the first cell with in-range fish usually filled all 16 slots, so the
-  // expected sample was an average over *cells* (each start equally
-  // likely), not over fish. A fish's cohesion/alignment target then
-  // depended on where it sat inside its cell: a static force field with the
-  // grid period (measured ±10% density modulation, sheets along the grid
-  // planes). So each cell gets a candidate quota proportional to its
-  // population (dithered by a per-cell hash so the expectation is exact):
-  // every fish in the block is equally likely to be examined, and the
-  // in-range ones are a uniform sample of the perception sphere.
-  // Deliberately NO own-cell priority: any position-quantized sampling bias
-  // is static in space and compounds — an earlier own-cell quota accreted
-  // the school into visible sheets along the grid planes within a minute.
+  // Stratified fair sweep over the 27-cell neighborhood. Each cell gets a
+  // candidate quota proportional to its population (dithered by a per-cell
+  // hash so the expectation is exact) from a hashed in-cell start, so every
+  // fish in the block is equally likely to be examined. The first sweep
+  // let the first cell with in-range fish fill all 16 slots: an average
+  // over *cells*, not fish, which made the cohesion target depend on where
+  // a fish sat in its cell (±10% density modulation, sheets along the grid
+  // planes). Quotas fixed that but the walk still stopped at the 16th
+  // accept, so cells early in the walk were favored whenever more than 16
+  // candidates were in range (94% of fish in olle-work's sheet; ~27 in
+  // range): a uniform pull of ~0.18 u toward -x/-y/-z and a ±3% slope in
+  // the within-cell density. So every candidate is examined and the 16
+  // accepts are a reservoir sample of all the in-range ones, as on the
+  // CPU engine. Deliberately NO own-cell priority: any position-quantized
+  // sampling bias is static in space and compounds — an earlier own-cell
+  // quota accreted the school into visible sheets within a minute.
   // Close-range personal space is handled exhaustively by the fine
   // collision grid below, so flocking keeps the reference's 16-accept cap.
   var total = 0u;
@@ -880,11 +880,13 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
     let cell = u32(gx) + u32(gy) * u32(D) + u32(gz) * D2;
     total += gridData[CS_OFF + cell + 1u] - gridData[CS_OFF + cell];
   }
+  var picked: array<u32, MAX_NEIGHBORS>;
+  var inRange = 0u;
   if (total > 0u) {
     let candScale = f32(SAMPLE_CAND) / f32(total);
+    var rs = pcg(rot + 0x9e3779b9u);
     for (var oi = 0u; oi < 27u; oi++) {
-      if (found >= MAX_NEIGHBORS) { break; }
-      let o = OFFS[(oi + rot) % 27u];
+      let o = OFFS[oi];
       let gx = cx + o.x;
       let gy = cy + o.y;
       let gz = cz + o.z;
@@ -896,47 +898,60 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
       let cnt = gridData[CS_OFF + cell + 1u] - start;
       if (cnt == 0u) { continue; }
       let h = pcg(rot ^ cell);
-      let off = h % cnt;
       // Top 24 bits only: an f32 of the full u32 can round up to exactly 1.0.
       let dither = f32(pcg(h) >> 8u) * (1.0 / 16777216.0);
       let quota = min(cnt, u32(floor(f32(cnt) * candScale + dither)));
+      // A wrapping counter, not (off + e) % cnt: an integer divide per
+      // candidate was ~10% of the kernel.
+      var slot = h % cnt;
       for (var e = 0u; e < quota; e++) {
-        if (found >= MAX_NEIGHBORS) { break; }
-        let j = gridData[CE_OFF + start + ((off + e) % cnt)];
+        let j = gridData[CE_OFF + start + slot];
+        slot += 1u;
+        if (slot == cnt) { slot = 0u; }
         if (j == i) { continue; }
-        let jd = dynIn[j];
-        let d3 = jd.pe.xyz - pos;
-        let d2 = dot(d3, d3);
-        if (d2 > perception2) { continue; }
-
-        let dist = max(sqrt(d2), 1e-4);
-        if (dist < sepR) {
-          let w = 1.0 - dist / sepR;
-          sep -= d3 * (w * w / dist);
+        let d3 = dynIn[j].pe.xyz - pos;
+        if (dot(d3, d3) > perception2) { continue; }
+        if (inRange < MAX_NEIGHBORS) {
+          picked[inRange] = j;
+        } else {
+          rs = pcg(rs);
+          let r = rs % (inRange + 1u);
+          if (r < MAX_NEIGHBORS) { picked[r] = j; }
         }
-        coh += jd.pe.xyz;
-        aln += jd.vf.xyz;
-        found++;
-
-        if (jd.pe.w > CONTAGIOUS_ABOVE) {
-          // Contagion is weighted by the source's remaining heat (v3 counted
-          // every lit neighbor at full strength). At 20× density a lit fish
-          // is a "spark carrier": the radial kick flies it a full perception
-          // radius while still contagious, and with fuel everywhere the burn
-          // never starves (HANDOFF §5). Fresh flashes ignite at full
-          // strength; aging carriers fade — the click wavefront survives,
-          // the wandering smolder does not.
-          let srcHeat = (jd.pe.w - CONTAGIOUS_ABOVE) / (1.0 - CONTAGIOUS_ABOVE);
-          let w = (1.0 - dist / perception) * srcHeat;
-          contagion += w;
-          if (w > bestW) {
-            bestW = w;
-            bestJ = i32(j);
-          }
-        }
-        maxFear = max(maxFear, jd.vf.w);
+        inRange++;
       }
     }
+  }
+  for (var k = 0u; k < min(inRange, MAX_NEIGHBORS); k++) {
+    let j = picked[k];
+    let jd = dynIn[j];
+    let d3 = jd.pe.xyz - pos;
+    let dist = max(length(d3), 1e-4);
+    if (dist < sepR) {
+      let w = 1.0 - dist / sepR;
+      sep -= d3 * (w * w / dist);
+    }
+    coh += jd.pe.xyz;
+    aln += jd.vf.xyz;
+    found++;
+
+    if (jd.pe.w > CONTAGIOUS_ABOVE) {
+      // Contagion is weighted by the source's remaining heat (v3 counted
+      // every lit neighbor at full strength). At 20× density a lit fish
+      // is a "spark carrier": the radial kick flies it a full perception
+      // radius while still contagious, and with fuel everywhere the burn
+      // never starves (HANDOFF §5). Fresh flashes ignite at full
+      // strength; aging carriers fade — the click wavefront survives,
+      // the wandering smolder does not.
+      let srcHeat = (jd.pe.w - CONTAGIOUS_ABOVE) / (1.0 - CONTAGIOUS_ABOVE);
+      let w = (1.0 - dist / perception) * srcHeat;
+      contagion += w;
+      if (w > bestW) {
+        bestW = w;
+        bestJ = i32(j);
+      }
+    }
+    maxFear = max(maxFear, jd.vf.w);
   }
 
   // ---- Fine collision grid: continuous close-range personal space ----

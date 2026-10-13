@@ -20,7 +20,11 @@ export interface CpuApp {
 
 export function createCpuApp(container: HTMLElement, count: number): CpuApp {
   const renderer = new THREE.WebGLRenderer({
-    antialias: true,
+    // MSAA does nothing for point sprites (a frozen frame renders
+    // pixel-identical without it) and tripled the render cost: 3.0 ms vs
+    // 0.96 ms at 2880×1800 on M2 Max. The CPU path runs on the weakest
+    // devices, so that third is worth keeping.
+    antialias: false,
     alpha: true,
     powerPreference: "high-performance",
   });

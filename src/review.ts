@@ -67,7 +67,7 @@ interface LooseSwarm {
   burst: () => void;
 }
 
-type Win = Window & { swarm?: LooseSwarm; __render?: () => void };
+type Win = Window & { swarm?: LooseSwarm; __render?: () => void; __keepAlive?: boolean };
 
 const HOT = 0.92 * 255;
 const BRIGHT = 0.7 * 255;
@@ -163,6 +163,20 @@ function stamp(ctx: CanvasRenderingContext2D, text: string, x: number, y: number
 const pct = (v: number): string => `${(v * 100).toFixed(1)}%`;
 
 export async function runFilmstrip(opts: FilmstripOptions = {}): Promise<FilmstripResult> {
+  // The strip films the running loop. A hidden pane (rAF suspended) only
+  // steps through main.ts's fallback timer, which skips hidden tabs unless
+  // kept alive; without this every frame is the same frozen school.
+  const win = window as Win;
+  const prev = win.__keepAlive;
+  win.__keepAlive = true;
+  try {
+    return await filmstrip(opts);
+  } finally {
+    win.__keepAlive = prev;
+  }
+}
+
+async function filmstrip(opts: FilmstripOptions): Promise<FilmstripResult> {
   const win = window as Win;
   const swarm = win.swarm;
   if (!swarm) throw new Error("no live swarm (window.swarm missing)");

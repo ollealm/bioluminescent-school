@@ -43,15 +43,23 @@ rationale in place; user-facing sliders keep their v3 meaning throughout.
 - **Neighbor sampling** — the 16-neighbor cap survives, but candidates are
   **stratified by cell population**: a first pass counts the 27 cells, then
   each cell is examined for a share of `sampleCandidates` (96) proportional
-  to its count, from a hash-randomized in-cell offset, in hash-rotated cell
-  order. The earlier "first cell to fill the cap wins" sweep averaged over
-  *cells* rather than *fish*, which is a periodic force with the cell period
-  — measured as a ±10% density modulation at the perception-cell pitch that
-  showed as sheets along the grid planes once crowd dim revealed the core's
-  mid-tones (now ±3%, noise). Fair sampling must stay *pure*: an own-cell
+  to its count, from a hash-randomized in-cell offset, and the 16 accepts
+  are a reservoir sample of every in-range candidate. The earlier "first
+  cell to fill the cap wins" sweep averaged over *cells* rather than *fish*,
+  which is a periodic force with the cell period — measured as a ±10%
+  density modulation at the perception-cell pitch that showed as sheets
+  along the grid planes once crowd dim revealed the core's mid-tones.
+  Quotas alone still stopped the walk at the 16th accept, so cells early in
+  the walk won whenever more than 16 candidates were in range (94% of fish
+  in olle-work's sheet): a uniform ~0.18 u cohesion pull toward −x/−y/−z
+  and a ±3–4% low-side slope in the within-cell density. The reservoir
+  removed both (within-cell ±1–3%, no slope; +0.11 ms per step at 25k).
+  A pointer sweep through the school's center reads the same on both
+  kernels, about −0.3 for the behind cohort whichever way it sweeps. Fair sampling must stay *pure*: an own-cell
   quota was tried for close-range locality and any position-quantized bias
   is static in space — it accreted the school into visible sheets within a
-  minute. Both calibration scales below were re-derived for it.
+  minute. Both calibration scales below were re-derived for it; the
+  reservoir moved click-cascade growth by under 3%, so they stand.
 - **The fine collision grid** (`fineGridDims`/`fineCellSize`/`pairPush`) —
   anti-clumping (Olle's ask). Fair sampling starves close-range
   separation (an overlapped pair-mate is one of ~800 candidates for 16
@@ -371,6 +379,26 @@ does a count pass, a hashed cell walk with population-proportional quotas
 out of 96 candidates, and keeps the 16 accepts as a reservoir sample of
 every in-range candidate: ±1% (noise), at 6.5 ms per step at 2,500 (was
 4.2).
+
+The CPU now steps like the GPU (2026-10-13). Three v3 behaviors went:
+neighbors read last frame's position, velocity, energy, fear and pulse
+center instead of arrays already updated earlier in the frame (a cascade
+or panic could hop several fish per frame along increasing indices, and
+two fish swapping indices reversed their drift); a fish lit by contagion
+or the predator's wake keeps its radial kick (the update loop's local
+velocity used to overwrite it); and contagion is heat-weighted like the
+GPU's. `CPU_TRANSMISSION_SCALE` (1.35) was calibrated on a centroid burst:
+a cascade grows 3.4× in its first ⅓ s, like the GPU's 3.5×. It still
+peaks earlier and dies sooner (~1.75 s vs 2.75 s) because the CPU school
+is smaller (RMS 3.9 vs 4.4 u), so the burst seeds twice the share and runs
+out of fuel; that is the feel's geometry, not contagion, so match the
+timing through the cpu block's school size, never by tuning this scale. Old vs new CPU on
+olle-work: elongation 10.7 vs 10.8, breathing ±53% vs ±54%, coherence
+0.20…0.97 vs 0.20…0.95; a 3 s stir blows out 1.19× vs 1.27×, implodes to
+0.84× vs 0.92× and reforms by 2.8 s vs 3.0 s (the GPU: 1.08×, 0.81×,
+4.6 s). Also: the grids sort only occupied cells (grid build 0.47 →
+0.05 ms), the fine grid uses the GPU's screen-wide extent, and MSAA is off
+(point sprites render pixel-identical without it, at a third of the cost).
 
 ## 4. Measurements
 

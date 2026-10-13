@@ -1,3 +1,4 @@
+import { TUNING } from "./params";
 import type { SwarmSystem } from "./system";
 
 /**
@@ -201,20 +202,37 @@ export async function runHarness(opts: HarnessOptions): Promise<HarnessReport> {
 
   // --- Cascade growth + bubble coherence (outburst) ---
   // Isolate the probe: no spontaneous flashes or startles while measuring,
-  // and a small seed so growth comes from transmission alone.
+  // and a small seed so growth comes from transmission alone. No wanderers
+  // or shivers: both send fish home, and a fish rejoining the school glows
+  // at energy 0.5. The burst lands on the school's mean position, not a
+  // fixed screen point the roaming school may have left.
   const saved = {
     spontaneous: P.spontaneous,
     startle: P.startle,
     mouseRadius: P.mouseRadius,
+    wanderRate: P.wanderRate,
+    shiver: P.shiver,
   };
   P.spontaneous = 0;
   P.startle = 0;
   P.mouseRadius = 4;
+  P.wanderRate = 0;
+  P.shiver = 0;
+  // A pointer left active (the mouse over the page when the harness was
+  // started) survives rebuild and would steer the whole cascade probe.
+  sys.clearPointer();
   sys.rebuild(n);
   await stepFlushed(sys, probe, 480);
-  sys.updateMousePosition({ x: -0.1, y: 0 });
-  sys.burst();
-  sys.clearPointer();
+  {
+    const s0 = await probe.read();
+    let cx = 0, cy = 0, cz = 0;
+    for (let i = 0; i < n; i++) {
+      cx += s0.pos[i * 3];
+      cy += s0.pos[i * 3 + 1];
+      cz += s0.pos[i * 3 + 2];
+    }
+    sys.burst({ x: cx / n, y: cy / n, z: cz / n });
+  }
   // The GPU applies the burst inside the next update, so sample the seed
   // one frame in (the reference sampled synchronously; one 60th of decay
   // does not change the story).
@@ -229,10 +247,14 @@ export async function runHarness(opts: HarnessOptions): Promise<HarnessReport> {
   step(sys, 20);
   cascadeGrowth.push(litCount(await probe.read(), n));
   await stepFlushed(sys, probe, 300);
-  const cascadeDied = litCount(await probe.read(), n) === 0;
+  // Extinct = nothing left that can ignite a neighbor. The 0.3 "lit" bar
+  // also counted rejoin glows (0.5), which no cascade grows from.
+  const cascadeDied = litCount(await probe.read(), n, TUNING.contagiousAbove) === 0;
   P.spontaneous = saved.spontaneous;
   P.startle = saved.startle;
   P.mouseRadius = saved.mouseRadius;
+  P.wanderRate = saved.wanderRate;
+  P.shiver = saved.shiver;
 
   // --- Inburst coherence ---
   // Deviation from the v3 harness: measure on a fresh, settled field. The

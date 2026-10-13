@@ -68,17 +68,30 @@ function pcg(v: number): number {
   return ((w >>> 22) ^ w) >>> 0;
 }
 
-// Fine collision grid (FD cells per axis of GPU_TUNING.fineCellSize): close-range
+// Contagion gain on this engine, calibrated separately from the GPU's
+// GPU_TUNING.transmissionScale. With heat-weighted contagion, the kick and
+// last-frame neighbor reads (the GPU's mechanics), a centroid burst on
+// olle-work (12 runs each) grows 2.5× in its first ⅓ s at 1.0, 3.0× at
+// 1.2, 3.4× at 1.4; the GPU grows 3.5×. So the mechanics agree near the
+// GPU's own 1.35. The CPU still peaks earlier and dies sooner (~1.75 s vs
+// 2.75 s) because its smaller school (RMS 3.9 vs 4.4 u) gives the burst
+// twice the seed share and less fuel; that is the feel's geometry, not
+// contagion. At 1.35 the flash also stays near the old CPU's (lit 0.67 vs
+// 0.73 of the school at ⅓ s).
+const CPU_TRANSMISSION_SCALE = 1.35;
+
+// Fine collision grid (GPU_TUNING.fineGridDims cells of fineCellSize): close-range
 // personal space, every overlap seen every frame. v3's flocking scan stopped
 // at the first 16 neighbors in cell order; in a dense school those all sat
 // in one corner cell, separation then pushes every fish the same way (no
 // divergence, so it can't hold pressure) and herd/sheet/contract crushed
-// the school to a 1 u pancake. Same fix and cell size as the GPU kernel;
-// the CPU keeps the original 64³ cube (±14.4 u) instead of the GPU's wider
-// per-axis grid, whose 885k cells would cost a CPU clear every frame.
-const FD = 64;
-const FD2 = FD * FD;
-const FCELLS = FD * FD * FD;
+// the school to a 1 u pancake. Same fix, cells and extent as the GPU
+// kernel: the counting sort touches only occupied cells, so the screen-wide
+// extent costs memory, not time (a 64³ cube clamped wanderers into its edge
+// cells and a school moved past ±14.4 u checked 677k pairs instead of 77k).
+const [FX, FY, FZ] = GPU_TUNING.fineGridDims;
+const FXY = FX * FY;
+const FCELLS = FX * FY * FZ;
 const F_INV = 1 / GPU_TUNING.fineCellSize;
 
 // Crowd-dim density grid: counts only, cells of half a perception radius.
@@ -114,6 +127,42 @@ function shapeAniso(
   ANISO[0] = px * a + (x - px) * b;
   ANISO[1] = py * a + (y - py) * b;
   ANISO[2] = pz * a + (z - pz) * b;
+}
+
+/**
+ * Counting sort of fish into grid cells by cellOf, touching only cells
+ * that hold fish: O(n) per frame instead of O(cells) (the 262k-cell fine
+ * grid's clear and scan were 0.5 ms of a 6.3 ms step at 2,500 fish).
+ * Ranges are laid out in first-touched order; every reader goes through
+ * start[c] and count[c], and each cell's entries keep ascending fish order,
+ * so lookups are unchanged. On entry `count` is zero except the cells in
+ * touched[0, touchedN), which are cleared first. Returns the new touchedN.
+ */
+function sortIntoCells(
+  n: number,
+  cellOf: Int32Array,
+  count: Int32Array,
+  start: Int32Array,
+  entries: Int32Array,
+  touched: Int32Array,
+  touchedN: number,
+): number {
+  for (let k = 0; k < touchedN; k++) count[touched[k]] = 0;
+  let tn = 0;
+  for (let i = 0; i < n; i++) {
+    const c = cellOf[i];
+    if (count[c]++ === 0) touched[tn++] = c;
+  }
+  let sum = 0;
+  for (let k = 0; k < tn; k++) {
+    const c = touched[k];
+    start[c] = sum;
+    sum += count[c];
+  }
+  // Starts double as scatter cursors, then shift back.
+  for (let i = 0; i < n; i++) entries[start[cellOf[i]]++] = i;
+  for (let k = 0; k < tn; k++) start[touched[k]] -= count[touched[k]];
+  return tn;
 }
 
 function detectMobile(): boolean {
@@ -199,27 +248,44 @@ export class ParticleSystem implements SwarmSystem {
   private pulse!: Float32Array;
   /** +1 = outburst (bubble bursting), -1 = inburst (bubble collapsing). */
   private pulseSign!: Float32Array;
+  // Last frame's state. Neighbors read these, never the live arrays:
+  // updating in place let a cascade or a panic hop several fish per frame
+  // along increasing indices, and made motion depend on array order (two
+  // fish swapping indices reversed their drift). The GPU reads last frame's
+  // buffer the same way.
+  private posPrev!: Float32Array;
+  private velPrev!: Float32Array;
+  private energyPrev!: Float32Array;
+  private fearPrev!: Float32Array;
+  private pulsePrev!: Float32Array;
+  private pulseSignPrev!: Float32Array;
   // Individuality
   private speedFactor!: Float32Array;
   private social!: Float32Array;
   private gaitClock!: Float32Array;
 
-  // Spatial grid (counting sort, rebuilt every frame)
+  // Spatial grid (counting sort over occupied cells, rebuilt every frame)
   private gridCount = new Int32Array(CELLS);
-  private gridStart = new Int32Array(CELLS + 1);
-  private gridCursor = new Int32Array(CELLS);
+  private gridStart = new Int32Array(CELLS);
   private gridEntries!: Int32Array;
   private cellOf!: Int32Array;
+  /** Cells holding fish last frame (cleared at the next sort). */
+  private gridTouched!: Int32Array;
+  private gridTouchedN = 0;
   /** Stepped-frame counter: seeds the per-frame neighbor sampling hash. */
   private frameNo = 0;
   // Fine collision grid (same counting sort)
   private fineCount = new Int32Array(FCELLS);
-  private fineStart = new Int32Array(FCELLS + 1);
+  private fineStart = new Int32Array(FCELLS);
   private fineEntries!: Int32Array;
   private fineCellOf!: Int32Array;
+  private fineTouched!: Int32Array;
+  private fineTouchedN = 0;
 
-  // Crowd dim
+  // Crowd dim (counts only; cleared through the touched list like the grids)
   private crowdCount = new Int32Array(CD * CD * CD);
+  private crowdTouched!: Int32Array;
+  private crowdTouchedN = 0;
   /** Smoothed mean local count over the school; -1 = not measured yet. */
   private nRef = -1;
   private crowdOn = false;
@@ -670,6 +736,12 @@ export class ParticleSystem implements SwarmSystem {
     this.fear = new Float32Array(count);
     this.pulse = new Float32Array(count * 3);
     this.pulseSign = new Float32Array(count);
+    this.posPrev = new Float32Array(count * 3);
+    this.velPrev = new Float32Array(count * 3);
+    this.energyPrev = new Float32Array(count);
+    this.fearPrev = new Float32Array(count);
+    this.pulsePrev = new Float32Array(count * 3);
+    this.pulseSignPrev = new Float32Array(count);
     this.speedFactor = new Float32Array(count);
     this.social = new Float32Array(count);
     this.gaitClock = new Float32Array(count);
@@ -677,6 +749,14 @@ export class ParticleSystem implements SwarmSystem {
     this.cellOf = new Int32Array(count);
     this.fineEntries = new Int32Array(count);
     this.fineCellOf = new Int32Array(count);
+    // New touched lists for the new count: the counts they'd clear go now.
+    this.gridCount.fill(0);
+    this.fineCount.fill(0);
+    this.crowdCount.fill(0);
+    this.gridTouched = new Int32Array(count);
+    this.fineTouched = new Int32Array(count);
+    this.crowdTouched = new Int32Array(count);
+    this.gridTouchedN = this.fineTouchedN = this.crowdTouchedN = 0;
     this.seeds = seeds;
     this.fade = fades;
     this.crowdOn = false;
@@ -801,6 +881,10 @@ export class ParticleSystem implements SwarmSystem {
       // Clamped so a degenerate centroid can't fling the pointer.
       const R = this.params.containRadius;
       const planeZ = Math.max(-R, Math.min(R, this.centroidZ));
+      // unproject reads matrixWorld, which only a render refreshes: before
+      // the first frame (a harness run at load) it is identity and the
+      // pointer collapsed ~60x toward the center.
+      this.camera.updateMatrixWorld();
       const v = new THREE.Vector3(ndc.x, ndc.y, 0.5).unproject(this.camera);
       const dir = v.sub(this.camera.position).normalize();
       if (Math.abs(dir.z) > 1e-4) {
@@ -1429,54 +1513,30 @@ export class ParticleSystem implements SwarmSystem {
 
   private buildGrid(invCell: number): void {
     const n = this.count;
-    this.gridCount.fill(0);
     for (let i = 0; i < n; i++) {
-      const idx =
+      this.cellOf[i] =
         ParticleSystem.cellCoord(this.pos[i * 3], invCell) +
         ParticleSystem.cellCoord(this.pos[i * 3 + 1], invCell) * D +
         ParticleSystem.cellCoord(this.pos[i * 3 + 2], invCell) * D2;
-      this.cellOf[i] = idx;
-      this.gridCount[idx]++;
+      this.fineCellOf[i] =
+        ParticleSystem.fineCoord(this.pos[i * 3], FX) +
+        ParticleSystem.fineCoord(this.pos[i * 3 + 1], FY) * FX +
+        ParticleSystem.fineCoord(this.pos[i * 3 + 2], FZ) * FXY;
     }
-    let sum = 0;
-    for (let c = 0; c < CELLS; c++) {
-      this.gridStart[c] = sum;
-      this.gridCursor[c] = sum;
-      sum += this.gridCount[c];
-    }
-    this.gridStart[CELLS] = sum;
-    for (let i = 0; i < n; i++) {
-      this.gridEntries[this.gridCursor[this.cellOf[i]]++] = i;
-    }
-
-    // Fine grid: starts double as the scatter cursors, then shift back.
-    const fc = this.fineCount;
-    const fs = this.fineStart;
-    fc.fill(0);
-    for (let i = 0; i < n; i++) {
-      const idx =
-        ParticleSystem.fineCoord(this.pos[i * 3]) +
-        ParticleSystem.fineCoord(this.pos[i * 3 + 1]) * FD +
-        ParticleSystem.fineCoord(this.pos[i * 3 + 2]) * FD2;
-      this.fineCellOf[i] = idx;
-      fc[idx]++;
-    }
-    sum = 0;
-    for (let c = 0; c < FCELLS; c++) {
-      fs[c] = sum;
-      sum += fc[c];
-    }
-    fs[FCELLS] = sum;
-    for (let i = 0; i < n; i++) {
-      this.fineEntries[fs[this.fineCellOf[i]]++] = i;
-    }
-    for (let c = 0; c < FCELLS; c++) fs[c] -= fc[c];
+    this.gridTouchedN = sortIntoCells(
+      n, this.cellOf, this.gridCount, this.gridStart, this.gridEntries,
+      this.gridTouched, this.gridTouchedN,
+    );
+    this.fineTouchedN = sortIntoCells(
+      n, this.fineCellOf, this.fineCount, this.fineStart, this.fineEntries,
+      this.fineTouched, this.fineTouchedN,
+    );
   }
 
   /** Clamped fine-grid coordinate along one axis. */
-  private static fineCoord(v: number): number {
-    const c = Math.floor(v * F_INV) + (FD >> 1);
-    return c < 0 ? 0 : c >= FD ? FD - 1 : c;
+  private static fineCoord(v: number, dim: number): number {
+    const c = Math.floor(v * F_INV) + (dim >> 1);
+    return c < 0 ? 0 : c >= dim ? dim - 1 : c;
   }
 
   /**
@@ -1509,14 +1569,18 @@ export class ParticleSystem implements SwarmSystem {
     const inv = 1 / (Math.max(0.5, this.params.perception) * 0.5);
     const half = CD >> 1;
     const counts = this.crowdCount;
-    counts.fill(0);
+    const touched = this.crowdTouched;
+    for (let k = 0; k < this.crowdTouchedN; k++) counts[touched[k]] = 0;
+    let tn = 0;
     const coord = (v: number): number => {
       const c = Math.floor(v * inv) + half;
       return c < 0 ? 0 : c >= CD ? CD - 1 : c;
     };
     for (let i = 0; i < n; i++) {
-      counts[coord(pos[i * 3]) + coord(pos[i * 3 + 1]) * CD + coord(pos[i * 3 + 2]) * CD2]++;
+      const c = coord(pos[i * 3]) + coord(pos[i * 3 + 1]) * CD + coord(pos[i * 3 + 2]) * CD2;
+      if (counts[c]++ === 0) touched[tn++] = c;
     }
+    this.crowdTouchedN = tn;
 
     // Pass 1: nLocal into fade (as scratch) and the school's mean.
     let sum = 0;
@@ -1785,6 +1849,18 @@ export class ParticleSystem implements SwarmSystem {
     const oldHZ = this.turnOldZ;
 
     this.buildGrid(invCell);
+    // Snapshot before this frame's ignitions, so a seed lights its
+    // neighbors next frame, as on the GPU.
+    this.posPrev.set(pos);
+    this.velPrev.set(vel);
+    this.energyPrev.set(energy);
+    this.fearPrev.set(fear);
+    this.pulsePrev.set(this.pulse);
+    this.pulseSignPrev.set(this.pulseSign);
+    const posPrev = this.posPrev;
+    const velPrev = this.velPrev;
+    const energyPrev = this.energyPrev;
+    const fearPrev = this.fearPrev;
 
     // Spontaneous flashes: the swarm glimmers on its own.
     let spontAcc = P.spontaneous * dt;
@@ -1899,9 +1975,9 @@ export class ParticleSystem implements SwarmSystem {
             const j = this.gridEntries[start + (oe < cnt ? oe : oe - cnt)];
             if (j === i) continue;
             const j3 = j * 3;
-            const dx = pos[j3] - x;
-            const dy = pos[j3 + 1] - y;
-            const dz = pos[j3 + 2] - z;
+            const dx = posPrev[j3] - x;
+            const dy = posPrev[j3 + 1] - y;
+            const dz = posPrev[j3 + 2] - z;
             if (dx * dx + dy * dy + dz * dz > perception2) continue;
             if (inRange < MAX_NEIGHBORS) {
               nbJ[inRange] = j;
@@ -1918,9 +1994,9 @@ export class ParticleSystem implements SwarmSystem {
       for (let k = 0; k < accepted; k++) {
         const j = nbJ[k];
         const j3 = j * 3;
-        const dx = pos[j3] - x;
-        const dy = pos[j3 + 1] - y;
-        const dz = pos[j3 + 2] - z;
+        const dx = posPrev[j3] - x;
+        const dy = posPrev[j3 + 1] - y;
+        const dz = posPrev[j3 + 2] - z;
         const d = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1e-4;
         if (d < sepR) {
           const w = 1 - d / sepR;
@@ -1929,44 +2005,50 @@ export class ParticleSystem implements SwarmSystem {
           sepY -= dy * inv;
           sepZ -= dz * inv;
         }
-        cohX += pos[j3];
-        cohY += pos[j3 + 1];
-        cohZ += pos[j3 + 2];
-        alnX += vel[j3];
-        alnY += vel[j3 + 1];
-        alnZ += vel[j3 + 2];
+        cohX += posPrev[j3];
+        cohY += posPrev[j3 + 1];
+        cohZ += posPrev[j3 + 2];
+        alnX += velPrev[j3];
+        alnY += velPrev[j3 + 1];
+        alnZ += velPrev[j3 + 2];
         found++;
 
-        if (energy[j] > TUNING.contagiousAbove) {
-          const w = 1 - d / perception;
+        if (energyPrev[j] > TUNING.contagiousAbove) {
+          // Weighted by the source's remaining heat, as on the GPU: the
+          // radial kick flies a lit fish a perception radius while it is
+          // still contagious, and at full weight those spark carriers keep
+          // re-seeding the burn so cascades never die.
+          const srcHeat =
+            (energyPrev[j] - TUNING.contagiousAbove) / (1 - TUNING.contagiousAbove);
+          const w = (1 - d / perception) * srcHeat;
           contagion += w;
           if (w > bestW) {
             bestW = w;
             bestJ = j;
           }
         }
-        if (fear[j] > maxFear) maxFear = fear[j];
+        if (fearPrev[j] > maxFear) maxFear = fearPrev[j];
       }
 
       // ---- Fine collision grid: continuous close-range personal space ----
       let hpX = 0, hpY = 0, hpZ = 0;
       {
-        const fx = ParticleSystem.fineCoord(x);
-        const fy = ParticleSystem.fineCoord(y);
-        const fz = ParticleSystem.fineCoord(z);
-        for (let oz = fz > 0 ? fz - 1 : 0; oz <= fz + 1 && oz < FD; oz++) {
-          for (let oy = fy > 0 ? fy - 1 : 0; oy <= fy + 1 && oy < FD; oy++) {
-            const row = oy * FD + oz * FD2;
-            for (let ox = fx > 0 ? fx - 1 : 0; ox <= fx + 1 && ox < FD; ox++) {
+        const fx = ParticleSystem.fineCoord(x, FX);
+        const fy = ParticleSystem.fineCoord(y, FY);
+        const fz = ParticleSystem.fineCoord(z, FZ);
+        for (let oz = fz > 0 ? fz - 1 : 0; oz <= fz + 1 && oz < FZ; oz++) {
+          for (let oy = fy > 0 ? fy - 1 : 0; oy <= fy + 1 && oy < FY; oy++) {
+            const row = oy * FX + oz * FXY;
+            for (let ox = fx > 0 ? fx - 1 : 0; ox <= fx + 1 && ox < FX; ox++) {
               const cell = ox + row;
               const start = this.fineStart[cell];
               const end = start + this.fineCount[cell];
               for (let e = start; e < end; e++) {
                 const j = this.fineEntries[e];
                 if (j === i) continue;
-                const dx = pos[j * 3] - x;
-                const dy = pos[j * 3 + 1] - y;
-                const dz = pos[j * 3 + 2] - z;
+                const dx = posPrev[j * 3] - x;
+                const dy = posPrev[j * 3 + 1] - y;
+                const dz = posPrev[j * 3 + 2] - z;
                 const d2 = dx * dx + dy * dy + dz * dz;
                 if (d2 >= pushR2) continue;
                 const d = Math.max(Math.sqrt(d2), 1e-4);
@@ -1989,17 +2071,22 @@ export class ParticleSystem implements SwarmSystem {
         this.refract[i] <= 0 &&
         energy[i] < TUNING.contagiousAbove
       ) {
-        const p = 1 - Math.exp(-contagion * P.transmission * dt);
+        const p = 1 - Math.exp(-contagion * P.transmission * CPU_TRANSMISSION_SCALE * dt);
         // Inherit the igniter's epicenter — the whole cascade stays one bubble.
         if (Math.random() < p) {
           this.igniteIndex(
             i,
             false,
-            this.pulse[bestJ * 3],
-            this.pulse[bestJ * 3 + 1],
-            this.pulse[bestJ * 3 + 2],
-            this.pulseSign[bestJ],
+            this.pulsePrev[bestJ * 3],
+            this.pulsePrev[bestJ * 3 + 1],
+            this.pulsePrev[bestJ * 3 + 2],
+            this.pulseSignPrev[bestJ],
           );
+          // igniteIndex kicks this.vel; the locals would overwrite it at
+          // integration (v3 lost every contagion kick that way).
+          vx = vel[i3];
+          vy = vel[i3 + 1];
+          vz = vel[i3 + 2];
         }
       }
 
@@ -2391,6 +2478,9 @@ export class ParticleSystem implements SwarmSystem {
           if (igniteRate > 0.05 && this.fired[i] === 0 && this.refract[i] <= 0) {
             if (Math.random() < igniteRate * fall * dt) {
               this.igniteIndex(i, false, tpx, tpy, tpz, 1);
+              vx = vel[i3];
+              vy = vel[i3 + 1];
+              vz = vel[i3 + 2];
             }
           }
         }

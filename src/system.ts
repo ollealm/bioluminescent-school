@@ -63,8 +63,8 @@ export interface SwarmSystem {
   updateRendererSize(halfX: number, halfY: number): void;
   setPixelRatio(dpr: number): void;
 
-  /** Detonate a chain reaction at the pointer (or swarm center). */
-  burst(): void;
+  /** Detonate a chain reaction at `at`, else the pointer (or swarm center). */
+  burst(at?: { x: number; y: number; z: number }): void;
   /** Blow the whole swarm apart; it will drift back and reunite. */
   scatter(): void;
   /** A false alarm — a pocket of panic sweeps the school. */
