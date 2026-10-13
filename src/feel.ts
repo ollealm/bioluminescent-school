@@ -44,17 +44,12 @@ export function urlFeel(): string | null {
   return name && isFeel(name) ? name : null;
 }
 
-/** The feel a plain visit boots into: the one shipped on olle.work. */
+/** The feel a plain visit boots into on both backends: the one shipped on olle.work. */
 export const DEFAULT_FEEL = "olle-work";
 
-/**
- * The CPU fallback is the untouched v3 engine: it ignores every GPU-only
- * lever, so a feel tuned with sheet/herd/evade reads wrong on it (2,600
- * big bright dots at max speed 5). It boots into its own canonical state.
- */
-function defaultFor(system: SwarmSystem): string {
-  const isGpu = typeof (system as unknown as { readState?: unknown }).readState === "function";
-  return isGpu ? DEFAULT_FEEL : "site-default";
+/** The CPU fallback has no GPU state readback; that is how it is told apart. */
+function isCpu(system: SwarmSystem): boolean {
+  return typeof (system as unknown as { readState?: unknown }).readState !== "function";
 }
 
 export interface FeelSwitcherOptions {
@@ -93,6 +88,25 @@ export function installFeelSwitcher(
     // site-default) must return to defaults, not keep the last feel's.
     // Same for the accent and base: a feel without one clears the last override.
     apply({ ...rest, accent: rest.accent ?? null, base: rest.base ?? null, params: { ...DEFAULT_PARAMS, ...rest.params } });
+    // The CPU fallback takes the feel's per-backend overrides on top (fewer
+    // fish need their own speed and brightness), and its own count unless
+    // the URL pins one. Before the preset check below, which reads params.
+    if (isCpu(system) && snap.cpu) {
+      const { count: cpuCount, ...cpuParams } = snap.cpu;
+      const live = system.params as unknown as Record<string, number>;
+      for (const [k, v] of Object.entries(cpuParams)) {
+        if (k in DEFAULT_PARAMS && typeof v === "number") live[k] = v;
+      }
+      const urlCount = Number(new URLSearchParams(location.search).get("count")) || 0;
+      // A phone boots with fewer fish than the desktop count a feel names;
+      // a feel may thin it further but never raise it.
+      const coarse = window.matchMedia("(pointer: coarse)").matches;
+      const allowed = !coarse || (cpuCount ?? 0) < system.getCount();
+      if (cpuCount && !urlCount && allowed && cpuCount !== system.getCount()) {
+        if (system.resize) system.resize(cpuCount);
+        else system.rebuild(cpuCount);
+      }
+    }
     // A feel usually carries the preset names it was derived from, but its
     // sliders have moved on. Highlighting "Lagoon" over olle-work's values
     // misleads (and clicking it wipes the feel's tuning), so a category
@@ -121,7 +135,7 @@ export function installFeelSwitcher(
 
   panel.setFeels(FEEL_NAMES);
   panel.onFeelSelect = (name) => void select(name);
-  panel.onReset = () => void select(defaultFor(system), { updateUrl: false });
+  panel.onReset = () => void select(DEFAULT_FEEL, { updateUrl: false });
 
   let applied: string | null = null;
   const requested = new URLSearchParams(location.search).get("feel");
@@ -130,12 +144,11 @@ export function installFeelSwitcher(
   } else {
     // A typo'd link still gets the shipped look rather than bare defaults.
     if (requested) console.warn(`[feel] unknown ?feel=${requested}; have: ${FEEL_NAMES.join(", ")}`);
-    if (opts.useDefault && isFeel(defaultFor(system))) {
+    if (opts.useDefault && isFeel(DEFAULT_FEEL)) {
       // The shipped look: a plain visit gets the final feel, silently (no
       // URL rewrite). A dev session that saved its own tweaks passes
       // useDefault false and keeps them.
-      const name = defaultFor(system);
-      if (select(name, { updateUrl: false })) applied = name;
+      if (select(DEFAULT_FEEL, { updateUrl: false })) applied = DEFAULT_FEEL;
     }
   }
 

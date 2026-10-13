@@ -241,7 +241,6 @@ const CSS = `
 .blm-feel-key { color: rgba(96, 255, 178, 0.45); margin-right: 6px; }
 .blm-feel.active .blm-feel-key { color: #7dffb0; }
 .blm-moods { grid-template-columns: repeat(3, 1fr); }
-.blm-gpu-only { color: rgba(255, 209, 102, 0.6); margin-left: 4px; }
 .blm-foot { margin-top: 10px; font-size: 9px; color: rgba(150, 220, 185, 0.35); text-align: center; }
 @media (max-width: 640px) {
   .blm-panel { right: 10px; left: 10px; top: 10px; width: auto; max-height: 62vh; }
@@ -438,7 +437,7 @@ export class DevPanel {
     root.appendChild(this.feelWrap);
 
     // Mood - pin the director to one mood to judge it in isolation. A test
-    // control only: never saved to localStorage or snapshots. GPU only.
+    // control only: never saved to localStorage or snapshots.
     if (sys.forceMood && sys.moodNames) {
       root.appendChild(el("div", "blm-sub", "Mood"));
       const grid = el("div", "blm-presets blm-moods");
@@ -460,7 +459,7 @@ export class DevPanel {
     }
 
     // v3 presets, folded away: they are whole-category resets (motion or
-    // reaction keys back to a v3 set, the GPU-only levers in that category
+    // reaction keys back to a v3 set, the fork's levers in that category
     // to 0), not modifiers of the active feel. The owner mistook them for
     // modifiers, so they live at the bottom under a collapsed heading.
     const legacy = document.createElement("details");
@@ -669,11 +668,6 @@ export class DevPanel {
     dots.title = ["fine-tuning", "shapes the feel", "defines the feel"][def.impact - 1];
     hint.appendChild(dots);
     hint.appendChild(document.createTextNode(def.hint));
-    if (GPU_ONLY_KEYS.has(def.key)) {
-      const tag = el("span", "blm-gpu-only", "· GPU only");
-      tag.title = "The CPU fallback (v3 reference) ignores this parameter";
-      hint.appendChild(tag);
-    }
     wrap.appendChild(hint);
     return wrap;
   }
@@ -725,8 +719,8 @@ export class DevPanel {
         this.save();
       });
     } else {
-      // The CPU fallback is the untouched v3 reference: palette accents only.
-      wrap.title = "GPU only - the CPU fallback keeps the palette's accent";
+      // A backend without overrides: palette accents only.
+      wrap.title = "This backend keeps the palette's accent";
       this.accentInput.disabled = true;
     }
     row.appendChild(this.accentInput);
@@ -766,8 +760,8 @@ export class DevPanel {
         this.save();
       });
     } else {
-      // The CPU fallback is the untouched v3 reference: palette colors only.
-      wrap.title = "GPU only - the CPU fallback keeps the palette's colors";
+      // A backend without overrides: palette colors only.
+      wrap.title = "This backend keeps the palette's colors";
       this.baseInput.disabled = true;
     }
     row.appendChild(this.baseInput);
@@ -863,9 +857,6 @@ export class DevPanel {
     }
   }
 }
-
-/** Params only the GPU kernel implements (added after the v3 port). */
-const GPU_ONLY_KEYS = new Set<string>(["flashSize", "roamDepth", "collapse", "shape", "herd", "shiver", "sheet", "bite", "flight", "rally", "evade", "crowdDim", "accentShare"]);
 
 function el(tag: string, cls: string, text?: string): HTMLElement {
   const node = document.createElement(tag);

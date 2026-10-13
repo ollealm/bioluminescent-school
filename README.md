@@ -10,8 +10,14 @@ below that. Destined to be the background of olle.work.
 The behavior contract is `HANDOFF-GPU.md` in the reference repo: the four
 behavior layers, the taste law (in-hue glow never white, movement before
 light, green over cyan, bias fast), and the eight dynamical invariants all
-survive the port. The CPU version remains the untouched reference
-implementation — and ships inside this fork as the no-WebGPU fallback.
+survive the port. The untouched v3 reference stays in its own repo; the
+no-WebGPU fallback in `src/cpu/` is that engine carrying this fork's
+levers (bite, flight, rally, evade, herd + contract, shiver, sheet, shape,
+roamDepth, the turn wave, the strike, crowd dim, accent/base), so it reads
+as the same school with fewer fish (4,000 desktop / 2,200 phone). Only the
+compensations for GPU neighbor sampling and 20× density are left out. A
+feel's optional `cpu` block (`count` plus param overrides) is merged over
+its params on the CPU backend.
 
 ```
 npm install
@@ -66,7 +72,7 @@ comparing full parameter sets live:
   *Accent* picker overrides the color itself, saved as the snapshot's
   optional `accent` key (a feel without one shows the palette's own).
   Recolors replay each fish's seeded draws, so only the fish that change
-  role change color. The CPU fallback keeps v3's per-palette accents.
+  role change color. Both backends.
 - `flight` (round four, owner: "keep the small area around the cursor but
   make the reaction much stronger, so hit fish leave the school and take
   others with them, with a dynamic delay"): a fish whose fear exceeds
@@ -132,8 +138,8 @@ comparing full parameter sets live:
   deep, 0.4 is the compromise); and cohesive wander groups (wanderers keep
   cohesion and alignment among themselves and recruit a pocket up to
   4.8 u, so hundreds peel off as a sub-school and merge back - this one
-  changes wander behavior at every setting, the CPU backend still has v3
-  wanderers). olle-work = rally-tight + sheet 0.4, cohesion 1.3,
+  changes wander behavior at every setting; the CPU backend recruits up
+  to groupSize fish as a plain count). olle-work = rally-tight + sheet 0.4, cohesion 1.3,
   separation 1.3, herd 0.2, shiver 1.0, collapse 1.0, evade 0.6,
   groupSize 300, wanderRate 0.8. Measured: elongation 4.8 mean, breathing
   ±59%, coherence swinging 0.22…0.95; a 3 s stir blows the body into a
@@ -380,7 +386,7 @@ per step at 50,000** — the CPU reference spends 5.3 ms on 2,600. 100,000
 runs at 12.5 ms. Weaker WebGPU devices degrade via a frame-time governor
 that steps the count down (floor 8k; a single stalled frame such as a tab
 switch is ignored, only sustained misses count); no WebGPU, or a
-software/fallback adapter, boots the vendored CPU v3 at its original counts.
+software/fallback adapter, boots the CPU engine (v3 plus the levers).
 A lost GPU device (driver reset, GPU process crash) re-mounts the backend
 once with the current snapshot carried over, then falls back to CPU.
 

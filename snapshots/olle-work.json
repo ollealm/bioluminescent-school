@@ -64,5 +64,11 @@
     "roamDepth": 0.1,
     "flashSize": 0
   },
-  "accent": "#8ff2ff"
+  "accent": "#8ff2ff",
+  "cpu": {
+    "count": 4000,
+    "maxSpeed": 3.6,
+    "particleSize": 1.4,
+    "opacity": 0.5
+  }
 }

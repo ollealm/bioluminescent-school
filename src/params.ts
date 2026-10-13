@@ -334,32 +334,32 @@ export interface SwarmParams {
   /** Burst-and-glide swimming intensity (thrust impulses, then coasting). */
   gait: number;
   /**
-   * GPU-only. How often and how hard the school contracts in on itself, then
+   * Fork lever. How often and how hard the school contracts in on itself, then
    * releases (the director's CONTRACT mood). 0 = the reference FSM exactly;
    * 1 sends ~35% of cruise/mill exits into a contraction.
    */
   collapse: number;
   /**
-   * GPU-only. Stretches the school along its heading: anisotropic cohesion
+   * Fork lever. Stretches the school along its heading: anisotropic cohesion
    * (weaker along, stronger across) so it travels as a shoal, not a ball.
    * 0 = the reference's isotropic cohesion.
    */
   shape: number;
   /**
-   * GPU-only. Selfish-herd drive: every fish wants deeper into the school,
+   * Fork lever. Selfish-herd drive: every fish wants deeper into the school,
    * edge fish hardest, so the body pulses against its own crowd pressure.
    * The director swells it during a contraction. 0 = the reference.
    */
   herd: number;
   /**
-   * GPU-only. Waves of agitation at rest: on a random clock a pocket of fish
+   * Fork lever. Waves of agitation at rest: on a random clock a pocket of fish
    * takes fear and darts outward; fear contagion carries the shiver through
    * the school and the regroup/alarm machinery re-contracts it. No light.
    * Scales the event rate. 0 = no events (the reference).
    */
   shiver: number;
   /**
-   * GPU-only. Flattens the school toward the view plane: a damped z spring
+   * Fork lever. Flattens the school toward the view plane: a damped z spring
    * toward the school's mean depth plus stronger depth cohesion. 25k fish
    * stacked ~20 deep along the camera axis average density waves away; a
    * school a few fish deep shows them. 0 = the reference.
@@ -378,7 +378,7 @@ export interface SwarmParams {
   /**
    * How much of that roaming (and of the heading) happens in depth, toward
    * and away from the camera. 1 = v3 (z amplitude 0.45× roam, heading
-   * pitch up to ±0.3); 0 = the school stays in the camera plane. GPU only.
+   * pitch up to ±0.3); 0 = the school stays in the camera plane.
    */
   roamDepth: number;
   /** Rotating-vortex (fish mill) force around the swarm's own center. */
@@ -393,26 +393,26 @@ export interface SwarmParams {
   // --- Pointer (predator) ---
   mouseRadius: number;
   /**
-   * GPU-only. Crispness of the danger zone's edge: the escape and fear
+   * Fork lever. Crispness of the danger zone's edge: the escape and fear
    * falloffs ramp over [bite, 1] of the radius instead of [0, 1]. 0 = the
    * reference's soft gravity-like push; high = nothing until a fish is
    * close, then a full-strength bolt (a predator, not a well).
    */
   bite: number;
   /**
-   * GPU-only. How far fear carries a fish out of the school before it
+   * Fork lever. How far fear carries a fish out of the school before it
    * regroups: fear above 1 - flight keeps it fleeing past the threat band,
    * so with panic spread the hit fish take neighbors with them. 0 = v3.
    */
   flight: number;
   /**
-   * GPU-only. How violently frightened fish rush back to the school's
+   * Fork lever. How violently frightened fish rush back to the school's
    * center once the threat is gone: they drive for the centroid (not just
    * the edge) and overshoot through it. 0 = v3.
    */
   rally: number;
   /**
-   * GPU-only. The school evades a parked predator as a body: its center
+   * Fork lever. The school evades a parked predator as a body: its center
    * shifts away and fish slide around the threat instead of holding a
    * static shell. 0 = v3.
    */
@@ -451,20 +451,20 @@ export interface SwarmParams {
   stretch: number;
   /**
    * How much a lit (cascade) fish grows: sprite size × (1 + energy ×
-   * flashSize). v3 hard-coded 0.45; 0 = light only, no swelling. GPU only.
+   * flashSize). v3 hard-coded 0.45; 0 = light only, no swelling.
    */
   flashSize: number;
   /**
-   * Crowd dim (GPU only, 0..1): fish in cores denser than the nominal
+   * Crowd dim (0..1): fish in cores denser than the nominal
    * school fade by (nominal / local)^(0.8 * crowdDim), so additive pile-ups
    * read as a denser school rather than one blown-out glowing spot. 0 = off
    * (bit-identical to before).
    */
   crowdDim: number;
   /**
-   * Accent share (GPU only, appearance only): fraction of fish that take the
+   * Accent share (appearance only): fraction of fish that take the
    * palette's accent color. 0 removes them. Replaces the palette's own
-   * accentChance on the GPU backend; the CPU fallback keeps v3's.
+   * accentChance on both backends.
    */
   accentShare: number;
 }

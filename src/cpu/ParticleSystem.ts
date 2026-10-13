@@ -1,6 +1,8 @@
 import * as THREE from "three";
+import { baseStops, flashFromBase, hexToRgb, mulberry32 } from "../color";
 import {
   DEFAULT_PARAMS,
+  GPU_TUNING,
   PALETTES,
   STYLE_IDS,
   TUNING,
@@ -15,20 +17,23 @@ import {
   PRESET_REGISTRY,
   type PresetCategory,
 } from "../presets";
+import { SNAPSHOT_VERSION, type Snapshot, type SwarmSystem } from "../system";
 
 // Behavioral modes (per particle)
 const FLOCK = 0;
 const WANDER = 1;
 const RETURN = 2;
 
-// School moods (whole-swarm director)
+// School moods (whole-swarm director). CONTRACT is the `collapse` lever's
+// mood, unreachable at collapse 0, so the default FSM is v3's.
 const M_CRUISE = 0;
 const M_TURN = 1;
 const M_MILL = 2;
 const M_HOVER = 3;
 const M_STARTLE = 4;
+const M_CONTRACT = 5;
 
-const MOOD_NAMES = ["cruise", "turn", "mill", "hover", "startle"];
+const MOOD_NAMES = ["cruise", "turn", "mill", "hover", "startle", "contract"];
 
 // Spatial grid: dense, directly indexed. D³ cells of edge `perception`,
 // centered on the origin; positions outside clamp to border cells (distance
@@ -39,6 +44,52 @@ const CELLS = D * D * D;
 const MAX_NEIGHBORS = TUNING.maxNeighbors;
 const MAX_FORCE = TUNING.maxForce;
 
+// Fine collision grid (GPU_TUNING.fineGridDim/fineCellSize): close-range
+// personal space, every overlap seen every frame. The flocking scan stops
+// at the first 16 neighbors in cell order; in a dense school those all sit
+// in one corner cell, separation then pushes every fish the same way (no
+// divergence, so it can't hold pressure) and herd/sheet/contract crushed
+// the school to a 1 u pancake. Same fix and constants as the GPU kernel.
+const FD = GPU_TUNING.fineGridDim;
+const FD2 = FD * FD;
+const FCELLS = FD * FD * FD;
+const F_INV = 1 / GPU_TUNING.fineCellSize;
+
+// Crowd-dim density grid: counts only, cells of half a perception radius.
+// The flocking scan stops at 16 neighbors, so it can't tell a crowded core
+// from a merely full one; this grid can, for a few lookups per fish.
+const CD = 48;
+const CD2 = CD * CD;
+
+function smoothstep(e0: number, e1: number, x: number): number {
+  const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0)));
+  return t * t * (3 - 2 * t);
+}
+
+// Scratch for shapeAniso (no per-fish allocation in the hot loop).
+const ANISO = new Float64Array(3);
+
+/**
+ * Body-shape anisotropy: soften the pull along the school's heading and
+ * stiffen it across, so the body relaxes into a traveling shoal instead of
+ * a ball. Same as the GPU kernel's shapeAniso; result lands in ANISO.
+ */
+function shapeAniso(
+  x: number, y: number, z: number,
+  hx: number, hy: number, hz: number,
+  shape: number,
+): void {
+  const d = x * hx + y * hy + z * hz;
+  const px = d * hx;
+  const py = d * hy;
+  const pz = d * hz;
+  const a = 1 - 0.6 * shape;
+  const b = 1 + 0.8 * shape;
+  ANISO[0] = px * a + (x - px) * b;
+  ANISO[1] = py * a + (y - py) * b;
+  ANISO[2] = pz * a + (z - pz) * b;
+}
+
 function detectMobile(): boolean {
   if (typeof window === "undefined") return false;
   return (
@@ -48,7 +99,7 @@ function detectMobile(): boolean {
 }
 
 export interface ParticleSystemOptions {
-  /** Camera used to project the pointer onto the swarm plane (z=0). */
+  /** Camera used to project the pointer onto the swarm plane. */
   camera?: THREE.PerspectiveCamera;
   /** Particle count. Defaults to 2600 desktop / 1400 mobile. */
   count?: number;
@@ -56,18 +107,7 @@ export interface ParticleSystemOptions {
   presets?: Partial<Record<PresetCategory, string>>;
 }
 
-/** Bump when the snapshot shape or param semantics change incompatibly. */
-export const SNAPSHOT_VERSION = 3;
-
-export interface Snapshot {
-  /** Format version — lets forks and future versions port tuned settings. */
-  version: number;
-  presets: Record<PresetCategory, string>;
-  palette: PaletteName;
-  style: StyleName;
-  count: number;
-  params: SwarmParams;
-}
+type Vec3 = { x: number; y: number; z: number };
 
 /**
  * A living school of bioluminescent motes.
@@ -86,8 +126,18 @@ export interface Snapshot {
  *     bubbles with shared epicenters) *plus* shear-triggered luminescence —
  *     agitated particles glow, so every maneuver paints itself in light,
  *     the way real dinoflagellates fire when the water shears.
+ *
+ * This is the v3 engine carrying the GPU fork's levers (bite, flight,
+ * rally, evade, herd + contract, shiver, sheet, shape, roamDepth, the turn
+ * wave, the strike, crowd dim, accent/base overrides), ported from
+ * src/gpu/wgsl-sim.ts and GpuSwarm.ts so the fallback feels like the GPU
+ * school with fewer fish. Every lever defaults to 0. Also ported: the fine
+ * collision grid, because the levers pack the school dense enough that
+ * v3's 16-neighbor cap starves separation here too. Not ported: the other
+ * compensations for GPU sampling and 20× density (stratified sampling,
+ * transmission / fear-spread / refractory scales, predator crowd relief).
  */
-export class ParticleSystem {
+export class ParticleSystem implements SwarmSystem {
   /** Live-tweakable parameters (the dev panel binds directly to this). */
   readonly params: SwarmParams;
   presetNames: Record<PresetCategory, string> = { ...DEFAULT_PRESETS };
@@ -107,6 +157,8 @@ export class ParticleSystem {
   private vel!: Float32Array;
   private energy!: Float32Array;
   private glow!: Float32Array;
+  /** Crowd-dim alpha per fish (1 = untouched); a render attribute. */
+  private fade!: Float32Array;
   private refract!: Float32Array;
   private fired!: Uint8Array;
   private mode!: Uint8Array;
@@ -130,6 +182,23 @@ export class ParticleSystem {
   private gridCursor = new Int32Array(CELLS);
   private gridEntries!: Int32Array;
   private cellOf!: Int32Array;
+  // Fine collision grid (same counting sort)
+  private fineCount = new Int32Array(FCELLS);
+  private fineStart = new Int32Array(FCELLS + 1);
+  private fineEntries!: Int32Array;
+  private fineCellOf!: Int32Array;
+
+  // Crowd dim
+  private crowdCount = new Int32Array(CD * CD * CD);
+  /** Smoothed mean local count over the school; -1 = not measured yet. */
+  private nRef = -1;
+  private crowdOn = false;
+
+  // Colors
+  private _accent: string | null = null;
+  private _base: string | null = null;
+  private lastAccentShare = NaN;
+  private colorSeed = 0;
 
   private time = 0;
   private pointer = new THREE.Vector3();
@@ -146,26 +215,72 @@ export class ParticleSystem {
   private centroidX = 0;
   private centroidY = 0;
   private centroidZ = 0;
+  /** RMS distance of flock fish from the centroid: the school's live spread. */
+  private rmsRadius = 0;
+  /** Mean per-fish fear: the director's alarm signal. */
+  private meanFear = 0;
   private wanderClock = 5;
+
+  // Evade: smoothed displacement of the school's center away from a parked
+  // predator (stays zero at evade 0).
+  private evadeX = 0;
+  private evadeY = 0;
+  private evadeZ = 0;
+
+  // Strike (flick) detection.
+  private strikeCooldown = 0;
+  private lastSlowTime = 0;
 
   // --- Swarm director state ---
   private mood = M_CRUISE;
   private moodTimer = 6;
+  /** Dev test control: pin the director to one mood (index), null = the FSM. */
+  private forced: number | null = null;
   private headX = 1;
   private headY = 0;
   private headZ = 0;
+  // Turn wave: fish outside a sphere growing from the vanguard fish keep
+  // the pre-turn heading, so the turn spreads from a small group.
+  private turnOldX = 1;
+  private turnOldY = 0;
+  private turnOldZ = 0;
+  private turnIndex = 0;
+  private turnRadius = 0;
+  private turnActive = 0;
+  /** An alarm collapse waiting for a running turn to finish. */
+  private alarmPending = false;
+  /** Consecutive turns (through cruise) since another mood; capped at 2. */
+  private turnsInARow = 0;
   private startleClock = 25;
+  /** Countdown to the next resting agitation wave (shiver). */
+  private shiverClock = 8;
   // Smoothed mood multipliers (live) and their targets
   private dirAlign = 1;
   private dirCoh = 1;
   private dirMill = 0;
   private dirDrive = 1;
   private dirSpeed = 0.6;
+  /** Separation gain: 1 except the 1.25 pop released after a contraction. */
+  private dirSep = 1;
+  /** Herd-drive gain: swells while contracting, 1 otherwise. */
+  private dirHerd = 1;
   private tgtAlign = 1;
   private tgtCoh = 1;
   private tgtMill = 0;
   private tgtDrive = 1;
   private tgtSpeed = 0.6;
+  private tgtSep = 1;
+  private tgtHerd = 1;
+
+  // Alarm-triggered collapse: a scare that subsides pulls the whole school
+  // into a bait ball.
+  /** meanFear smoothed over ~0.15 s. */
+  private alarm = 0;
+  /** Running max of alarm, decaying back toward it at 1/s. */
+  private alarmPeak = 0;
+  private alarmCooldown = 0;
+  /** Set right before enterMood(M_CONTRACT) to pick the harder contraction. */
+  private contractFromAlarm = false;
 
   constructor(scene: THREE.Scene, options: ParticleSystemOptions = {}) {
     this.scene = scene;
@@ -205,6 +320,40 @@ export class ParticleSystem {
     return MOOD_NAMES[this.mood];
   }
 
+  /** Current director mood, for harnesses and debugging. */
+  get moodName(): string {
+    return MOOD_NAMES[this.mood];
+  }
+
+  get moodNames(): readonly string[] {
+    return MOOD_NAMES;
+  }
+
+  get forcedMood(): string | null {
+    return this.forced === null ? null : MOOD_NAMES[this.forced];
+  }
+
+  /**
+   * Pin the director to one mood so it can be judged in isolation; null
+   * hands control back to the FSM (the current mood runs out its timer).
+   */
+  forceMood(name: string | null): void {
+    const i = name === null ? -1 : MOOD_NAMES.indexOf(name);
+    this.forced = i < 0 ? null : i;
+    if (this.forced !== null) this.enterForced();
+  }
+
+  /** Re-enter the pinned mood; startle goes through startle() so its pocket fires again. */
+  private enterForced(): void {
+    if (this.forced === M_STARTLE) this.startle();
+    else this.enterMood(this.forced!);
+  }
+
+  /** RMS radius of a uniform ball filling 0.8 × the tank: R·√(3/5). */
+  private nominalRmsRadius(): number {
+    return this.params.containRadius * 0.8 * Math.sqrt(3 / 5);
+  }
+
   // ------------------------------------------------------------------
   // Presets / palettes / styles
   // ------------------------------------------------------------------
@@ -228,11 +377,46 @@ export class ParticleSystem {
   setPalette(name: PaletteName): void {
     if (!PALETTES[name]) return;
     this.paletteName = name;
-    const palette = PALETTES[name];
-    (this.material.uniforms.uFlashColor.value as THREE.Color).set(
-      palette.flash,
-    );
-    if (this.geometry) this.applyPaletteColors();
+    this.syncFlashColor();
+    this.applyPaletteColors();
+  }
+
+  /** The accent override, or null while the palette's own accent shows. */
+  get accentColor(): string | null {
+    return this._accent;
+  }
+
+  /** Override the palette's accent ("#rrggbb"); null restores it. */
+  setAccent(hex: string | null): void {
+    if (hex !== null && !/^#[0-9a-f]{6}$/i.test(hex)) return;
+    const next = hex === null ? null : hex.toLowerCase();
+    if (next === this._accent) return;
+    this._accent = next;
+    this.applyPaletteColors();
+  }
+
+  /** The base override, or null while the palette's own gradient shows. */
+  get baseColor(): string | null {
+    return this._base;
+  }
+
+  /** Derive the gradient (and flash hue) from one color; null restores the palette's. */
+  setBase(hex: string | null): void {
+    if (hex !== null && !/^#[0-9a-f]{6}$/i.test(hex)) return;
+    const next = hex === null ? null : hex.toLowerCase();
+    if (next === this._base) return;
+    this._base = next;
+    this.syncFlashColor();
+    this.applyPaletteColors();
+  }
+
+  /** Flash hue ("#rrggbb"): the palette's, or derived from the base override. */
+  get flashColor(): string {
+    return this._base ? flashFromBase(this._base) : PALETTES[this.paletteName].flash;
+  }
+
+  private syncFlashColor(): void {
+    (this.material.uniforms.uFlashColor.value as THREE.Color).set(this.flashColor);
   }
 
   setStyle(name: StyleName): void {
@@ -249,6 +433,9 @@ export class ParticleSystem {
       style: this.styleName,
       count: this.count,
       params: { ...this.params },
+      // Only when set: a snapshot without one follows the palette.
+      ...(this._accent ? { accent: this._accent } : {}),
+      ...(this._base ? { base: this._base } : {}),
     };
   }
 
@@ -269,14 +456,11 @@ export class ParticleSystem {
         if (k in DEFAULT_PARAMS && typeof v === "number") params[k] = v;
       }
     }
+    if (s.accent !== undefined) this.setAccent(s.accent);
+    if (s.base !== undefined) this.setBase(s.base);
     if (s.palette) this.setPalette(s.palette);
     if (s.style) this.setStyle(s.style);
     if (s.count && s.count !== this.count) this.rebuild(s.count);
-  }
-
-  /** Current director mood, for harnesses and debugging. */
-  get moodName(): string {
-    return MOOD_NAMES[this.mood];
   }
 
   // ------------------------------------------------------------------
@@ -289,6 +473,7 @@ export class ParticleSystem {
       attribute float aEnergy;
       attribute float aSeed;
       attribute float aGlow;
+      attribute float aFade;
       attribute vec3 aVel;
 
       uniform float uTime;
@@ -296,12 +481,14 @@ export class ParticleSystem {
       uniform float uDpr;
       uniform float uTwinkle;
       uniform float uStretch;
+      uniform float uFlashSize;
 
       varying vec3 vColor;
       varying float vEnergy;
       varying float vSeed;
       varying float vTw;
       varying float vGlow;
+      varying float vFade;
       varying vec2 vDir;
       varying float vStretch;
 
@@ -310,6 +497,7 @@ export class ParticleSystem {
         vEnergy = aEnergy;
         vSeed = aSeed;
         vGlow = aGlow;
+        vFade = aFade;
 
         // Slow per-particle brightness oscillation ("breathing" of individuals)
         float tw = 1.0 - uTwinkle * 0.5 * (0.5 + 0.5 * sin(uTime * (0.5 + aSeed * 1.9) + aSeed * 87.0));
@@ -326,7 +514,8 @@ export class ParticleSystem {
         vDir = sp > 0.001 ? vv.xy / sp : vec2(1.0, 0.0);
         vStretch = st;
 
-        float size = aSize * uSize * (1.0 + aEnergy * 0.45) * (0.72 + 0.28 * tw);
+        // uFlashSize: how much a lit fish swells (v3 hard-coded 0.45).
+        float size = aSize * uSize * (1.0 + aEnergy * uFlashSize) * (0.72 + 0.28 * tw);
         gl_PointSize = size * uDpr * (340.0 / -mv.z) * st;
         gl_Position = projectionMatrix * mv;
       }
@@ -345,6 +534,7 @@ export class ParticleSystem {
       varying float vSeed;
       varying float vTw;
       varying float vGlow;
+      varying float vFade;
       varying vec2 vDir;
       varying float vStretch;
 
@@ -388,6 +578,9 @@ export class ParticleSystem {
         col *= 1.0 + e * uFlashBright + g * 0.8 + core * 0.55;
 
         a *= uOpacity * (0.35 + 0.65 * vTw) * (1.0 + e * 0.5 + g * 0.3);
+        // Crowd dim: fish in cores denser than the school's mean fade, so
+        // additive pile-ups read as density, not one blown-out spot.
+        a *= vFade;
         gl_FragColor = vec4(col * a, a);
       }
     `;
@@ -404,6 +597,7 @@ export class ParticleSystem {
         uDpr: { value: dpr },
         uTwinkle: { value: this.params.twinkle },
         uStretch: { value: this.params.stretch },
+        uFlashSize: { value: this.params.flashSize },
         uMotionGlow: { value: this.params.motionGlow },
         uStyle: { value: 0 },
         uOpacity: { value: this.params.opacity },
@@ -435,6 +629,7 @@ export class ParticleSystem {
     const energies = new Float32Array(count);
     const glows = new Float32Array(count);
     const seeds = new Float32Array(count);
+    const fades = new Float32Array(count).fill(1);
 
     this.vel = new Float32Array(count * 3);
     this.refract = new Float32Array(count);
@@ -450,7 +645,15 @@ export class ParticleSystem {
     this.gaitClock = new Float32Array(count);
     this.gridEntries = new Int32Array(count);
     this.cellOf = new Int32Array(count);
+    this.fineEntries = new Int32Array(count);
+    this.fineCellOf = new Int32Array(count);
     this.seeds = seeds;
+    this.fade = fades;
+    this.crowdOn = false;
+    this.nRef = -1;
+    this.turnActive = 0;
+    this.rmsRadius = this.nominalRmsRadius();
+    this.meanFear = 0;
 
     const R = this.params.containRadius;
     for (let i = 0; i < count; i++) {
@@ -488,6 +691,7 @@ export class ParticleSystem {
     this.geometry.setAttribute("aEnergy", new THREE.BufferAttribute(energies, 1));
     this.geometry.setAttribute("aGlow", new THREE.BufferAttribute(glows, 1));
     this.geometry.setAttribute("aSeed", new THREE.BufferAttribute(seeds, 1));
+    this.geometry.setAttribute("aFade", new THREE.BufferAttribute(fades, 1));
     // The physics velocity array doubles as the GPU attribute for stretch.
     this.geometry.setAttribute("aVel", new THREE.BufferAttribute(this.vel, 3));
 
@@ -495,6 +699,7 @@ export class ParticleSystem {
     this.energy = energies;
     this.glow = glows;
 
+    this.colorSeed = (Math.random() * 2 ** 32) >>> 0;
     this.applyPaletteColors();
 
     this.points = new THREE.Points(this.geometry, this.material);
@@ -502,25 +707,39 @@ export class ParticleSystem {
     this.scene.add(this.points);
   }
 
+  /**
+   * Same draws as the GPU backend: every fish takes five draws from the
+   * spawn's seed whichever branch it lands in, so dragging the accent share
+   * flips only the fish crossing it and a new accent recolors only accent
+   * fish. accentShare replaces the palette's own accentChance.
+   */
   private applyPaletteColors(): void {
+    if (!this.geometry) return;
     const palette: Palette = PALETTES[this.paletteName];
-    const stops = palette.stops.map((c) => new THREE.Color(c));
-    const accent = new THREE.Color(palette.accent);
+    const stops = this._base ? baseStops(this._base) : palette.stops.map(hexToRgb);
+    const accent = hexToRgb(this._accent ?? palette.accent);
+    const share = this.params.accentShare ?? palette.accentChance;
+    this.lastAccentShare = this.params.accentShare;
+    const rand = mulberry32(this.colorSeed);
     const colors = this.geometry.attributes.color.array as Float32Array;
-    const tmp = new THREE.Color();
 
     for (let i = 0; i < this.count; i++) {
-      if (Math.random() < palette.accentChance) {
-        tmp.copy(accent);
+      const pick = rand();
+      // Sample the gradient, biased toward the brighter end.
+      const t = Math.pow(rand(), 0.8) * (stops.length - 1);
+      let r: number, g: number, b: number;
+      if (pick < share) {
+        [r, g, b] = accent;
       } else {
-        // Sample the gradient, biased toward the brighter end.
-        const t = Math.pow(Math.random(), 0.8) * (stops.length - 1);
         const idx = Math.min(stops.length - 2, Math.floor(t));
-        tmp.copy(stops[idx]).lerp(stops[idx + 1], t - idx);
+        const f = t - idx;
+        r = stops[idx][0] + (stops[idx + 1][0] - stops[idx][0]) * f;
+        g = stops[idx][1] + (stops[idx + 1][1] - stops[idx][1]) * f;
+        b = stops[idx][2] + (stops[idx + 1][2] - stops[idx][2]) * f;
       }
-      colors[i * 3] = Math.min(1, tmp.r * (0.9 + Math.random() * 0.2));
-      colors[i * 3 + 1] = Math.min(1, tmp.g * (0.9 + Math.random() * 0.2));
-      colors[i * 3 + 2] = Math.min(1, tmp.b * (0.9 + Math.random() * 0.2));
+      colors[i * 3] = Math.min(1, r * (0.9 + rand() * 0.2));
+      colors[i * 3 + 1] = Math.min(1, g * (0.9 + rand() * 0.2));
+      colors[i * 3 + 2] = Math.min(1, b * (0.9 + rand() * 0.2));
     }
     this.geometry.attributes.color.needsUpdate = true;
   }
@@ -530,7 +749,7 @@ export class ParticleSystem {
   // ------------------------------------------------------------------
 
   /** NDC coordinates in [-1, 1]. Same signature as the old system. */
-  updateMousePosition(ndc: THREE.Vector2): void {
+  updateMousePosition(ndc: { x: number; y: number }): void {
     const now =
       typeof performance !== "undefined" ? performance.now() : Date.now();
 
@@ -541,17 +760,21 @@ export class ParticleSystem {
       const speed = Math.min(8, Math.sqrt(dx * dx + dy * dy) / dt);
       this.mouseSpeed += (speed - this.mouseSpeed) * 0.35;
     }
-    this.prevNDC.copy(ndc);
+    this.prevNDC.set(ndc.x, ndc.y);
     this.lastPointerTime = now;
     this.hasPrevNDC = true;
     this.pointerActive = true;
 
     if (this.camera) {
-      // Project the pointer ray onto the z=0 plane the swarm lives on.
+      // Aim at the school's mid-depth, not a fixed z=0 plane, so the
+      // predator column tracks wherever the school swims (as on the GPU).
+      // Clamped so a degenerate centroid can't fling the pointer.
+      const R = this.params.containRadius;
+      const planeZ = Math.max(-R, Math.min(R, this.centroidZ));
       const v = new THREE.Vector3(ndc.x, ndc.y, 0.5).unproject(this.camera);
       const dir = v.sub(this.camera.position).normalize();
       if (Math.abs(dir.z) > 1e-4) {
-        const t = -this.camera.position.z / dir.z;
+        const t = (planeZ - this.camera.position.z) / dir.z;
         this.pointer.copy(this.camera.position).addScaledVector(dir, t);
         return;
       }
@@ -575,7 +798,7 @@ export class ParticleSystem {
   // ------------------------------------------------------------------
 
   /** Detonate a chain reaction at the pointer (or swarm center). */
-  burst(at?: THREE.Vector3): void {
+  burst(at?: Vec3): void {
     const cx = at ? at.x : this.pointerActive ? this.pointer.x : 0;
     const cy = at ? at.y : this.pointerActive ? this.pointer.y : 0;
     const cz = at ? at.z : this.pointerActive ? this.pointer.z : 0;
@@ -647,7 +870,14 @@ export class ParticleSystem {
    * panic + light sweeps outward, the school tightens, then calms down.
    * Happens spontaneously (rate = params.startle); callable for fun.
    */
-  startle(at?: THREE.Vector3): void {
+  startle(at?: Vec3): void {
+    this.startlePocket(at);
+    // While pinned to another mood a startle is just its pocket, so the
+    // forced mood stays isolated.
+    if (this.forced === null || this.forced === M_STARTLE) this.enterMood(M_STARTLE);
+  }
+
+  private startlePocket(at?: Vec3): void {
     let ex: number, ey: number, ez: number;
     if (at) {
       ex = at.x; ey = at.y; ez = at.z;
@@ -655,12 +885,13 @@ export class ParticleSystem {
       const i = (Math.random() * this.count) | 0;
       ex = this.pos[i * 3]; ey = this.pos[i * 3 + 1]; ez = this.pos[i * 3 + 2];
     }
-    const R = 3.4;
     for (let i = 0; i < this.count; i++) {
       const dx = this.pos[i * 3] - ex;
       const dy = this.pos[i * 3 + 1] - ey;
       const dz = this.pos[i * 3 + 2] - ez;
       const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      // Ragged pocket (see seedTurnVanguard): per-fish radius jitter.
+      const R = 3.4 * (0.6 + 0.8 * Math.random());
       if (d > R) continue;
       const f = 0.25 + 0.75 * (1 - d / R);
       if (f > this.fear[i]) this.fear[i] = f;
@@ -669,7 +900,90 @@ export class ParticleSystem {
         this.igniteIndex(i, false, ex, ey, ez, 1);
       }
     }
-    this.enterMood(M_STARTLE);
+  }
+
+  /**
+   * The strike: a flick of the pointer detonates a directional V-blast at
+   * the lunge tip. Fish inside a forward-opening V part hard away from the
+   * strike line, take contact-grade fear, and a wake of outward ignitions
+   * lights the path. Depth uses the pointer column's squash.
+   */
+  private strike(cx: number, cy: number, cz: number, hx: number, hy: number, hz: number): void {
+    const R = this.params.mouseRadius;
+    const reach = R * GPU_TUNING.strikeReach;
+    const apex = GPU_TUNING.strikeApexWidth;
+    for (let i = 0; i < this.count; i++) {
+      const i3 = i * 3;
+      const dx = this.pos[i3] - cx;
+      const dy = this.pos[i3 + 1] - cy;
+      const dzS = (this.pos[i3 + 2] - cz) * 0.45;
+      const along = dx * hx + dy * hy + dzS * hz;
+      if (along <= -R * 0.2 || along >= reach) continue;
+      const px = dx - along * hx;
+      const py = dy - along * hy;
+      const pz = dzS - along * hz;
+      const perp = Math.sqrt(px * px + py * py + pz * pz);
+      const t01 = Math.max(0, Math.min(1, along / reach));
+      const sideR = R * (apex + (1 - apex) * t01); // the V opens forward
+      if (perp >= sideR) continue;
+      // Strongest at the apex, fading toward the tip and edges.
+      const fall = (1 - perp / sideR) * (1 - 0.55 * t01);
+      let ux: number, uy: number, uz: number;
+      if (perp > 1e-3) {
+        ux = px / perp; uy = py / perp; uz = pz / perp;
+      } else {
+        ux = -hy; uy = hx; uz = 0; // on the line: stable side
+      }
+      const blast = 9 * fall + 2;
+      this.vel[i3] += ux * blast + hx * fall * 2;
+      this.vel[i3 + 1] += uy * blast + hy * fall * 2;
+      this.vel[i3 + 2] += (uz * blast + hz * fall * 2) * 0.6;
+      this.fear[i] = Math.max(this.fear[i], 0.35 + 0.65 * fall);
+      this.glow[i] = Math.max(this.glow[i], 0.5 + 0.5 * fall);
+      if (Math.random() < 0.35 * fall + 0.08) {
+        this.igniteIndex(i, false, cx, cy, cz, 1);
+      }
+    }
+  }
+
+  /**
+   * Resting agitation: a pocket around a random fish takes fear and darts
+   * outward; fear contagion carries the shiver on. No ignition or glow, so
+   * movement comes before (and here without) light.
+   */
+  private spawnShiver(): void {
+    // Arm the alarm: one pocket rarely lifts the school's mean fear past
+    // the collapse threshold on its own, and the re-contraction as the
+    // wave dies is the point of a shiver.
+    this.alarm = Math.max(this.alarm, 0.12);
+    this.alarmPeak = Math.max(this.alarmPeak, 0.12);
+    const amp0 = 0.55 + 0.3 * Math.random();
+    const rMul = (2 + Math.random()) * Math.max(0.5, this.params.perception);
+    const c = (Math.random() * this.count) | 0;
+    const ex = this.pos[c * 3];
+    const ey = this.pos[c * 3 + 1];
+    const ez = this.pos[c * 3 + 2];
+    for (let i = 0; i < this.count; i++) {
+      const i3 = i * 3;
+      const dx = this.pos[i3] - ex;
+      const dy = this.pos[i3 + 1] - ey;
+      const dz = this.pos[i3 + 2] - ez;
+      const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      // Ragged pocket: jittered radius per fish.
+      const r = rMul * (0.6 + 0.8 * Math.random());
+      if (d >= r) continue;
+      const amp = amp0 * (1 - d / r);
+      if (amp > this.fear[i]) this.fear[i] = amp;
+      // The epicenter fish has no outward direction: it darts ahead.
+      let ux = this.headX, uy = this.headY, uz = this.headZ;
+      if (d > 1e-3) {
+        ux = dx / d; uy = dy / d; uz = dz / d;
+      }
+      const kick = 2.5 * amp;
+      this.vel[i3] += ux * kick;
+      this.vel[i3 + 1] += uy * kick;
+      this.vel[i3 + 2] += uz * kick * 0.6;
+    }
   }
 
   private igniteIndex(
@@ -736,7 +1050,14 @@ export class ParticleSystem {
   private enterMood(mood: number): void {
     const P = this.params;
     const tempo = Math.max(0.25, P.tempo);
+    const prev = this.mood;
     this.mood = mood;
+    // Released from a contraction, the school pops outward (separation
+    // 1.25) whatever mood it enters. The turn wave is not cleared here: it
+    // outlives the turn mood so the school never snaps onto the heading.
+    const popAfterContract = prev === M_CONTRACT && mood !== M_CONTRACT;
+    this.tgtSep = 1;
+    this.tgtHerd = 1;
 
     switch (mood) {
       case M_CRUISE:
@@ -749,17 +1070,33 @@ export class ParticleSystem {
         // Sometimes ease into a slightly new direction.
         if (Math.random() < 0.45) this.pickNewHeading(10, 40);
         break;
-      case M_TURN:
-        this.moodTimer = 1.2 + Math.random() * 0.8;
+      case M_TURN: {
+        this.turnsInARow++;
+        // The wave's crossing time plus a beat to settle, not a tempo-
+        // scaled constant: a turn that ends before the front has crossed
+        // snaps the rest of the school and reads as a second turn.
+        this.moodTimer =
+          (2.4 * this.rmsRadius) / GPU_TUNING.turnWaveSpeed + 0.8 + Math.random() * 0.6;
         this.tgtAlign = 1.6;
         this.tgtCoh = 0.95;
         this.tgtMill = 0;
-        this.tgtDrive = 1.5;
+        // Softer than v3's 1.5: alignment carries the wave, the will
+        // doesn't swing the whole school at once.
+        this.tgtDrive = 1.2;
         this.tgtSpeed = 0.95;
+        this.turnOldX = this.headX;
+        this.turnOldY = this.headY;
+        this.turnOldZ = this.headZ;
         this.pickNewHeading(70, 155);
-        this.seedTurnVanguard();
+        const leader = (Math.random() * this.count) | 0;
+        this.turnIndex = leader;
+        this.turnRadius = 0;
+        this.turnActive = 1;
+        this.seedTurnVanguard(leader);
         break;
+      }
       case M_MILL:
+        this.turnsInARow = 0;
         this.moodTimer = (6 + Math.random() * 7) / tempo;
         this.tgtAlign = 1.25;
         this.tgtCoh = 1.05;
@@ -768,6 +1105,7 @@ export class ParticleSystem {
         this.tgtSpeed = 0.5;
         break;
       case M_HOVER:
+        this.turnsInARow = 0;
         this.moodTimer = (3.5 + Math.random() * 5) / tempo;
         this.tgtAlign = 0.85;
         this.tgtCoh = 1.15;
@@ -783,13 +1121,55 @@ export class ParticleSystem {
         this.tgtDrive = 0.9;
         this.tgtSpeed = 1.0;
         break;
+      case M_CONTRACT: {
+        // The school draws in on itself: cohesion swells, the shared will
+        // slackens, a slight swirl keeps the condensing body alive.
+        // Personal space never gives (relaxing it crushed the GPU school
+        // into one glowing mass); arrival damping bounds the squeeze.
+        const c = P.collapse;
+        this.tgtAlign = 0.7;
+        this.tgtMill = 0.25;
+        this.tgtDrive = 0.25;
+        if (this.contractFromAlarm) {
+          // After a scare the whole school balls up: shorter, harder, and
+          // the herd drive surges.
+          this.contractFromAlarm = false;
+          this.moodTimer = (1.6 + Math.random() * 1.0) / tempo;
+          this.tgtCoh = 1.0 + 1.4 * c;
+          this.tgtSpeed = 0.45;
+          this.tgtHerd = 1 + 2.5 * c;
+        } else {
+          this.moodTimer = (2.2 + Math.random() * 1.8) / tempo;
+          this.tgtCoh = 1.0 + 0.9 * c;
+          this.tgtSpeed = 0.35;
+          this.tgtHerd = 1 + 1.2 * c;
+        }
+        break;
+      }
     }
+    if (popAfterContract) this.tgtSep = 1.25;
   }
 
   private pickNextMood(): number {
+    // Collapse diverts a share of cruise/mill exits into a contraction.
+    // No draw at 0: v3's FSM, untouched.
+    const c = this.params.collapse;
+    if (
+      c > 0 &&
+      (this.mood === M_CRUISE || this.mood === M_MILL) &&
+      Math.random() < Math.min(0.5, 0.2 * c)
+    ) {
+      return M_CONTRACT;
+    }
     const r = Math.random();
     switch (this.mood) {
       case M_CRUISE:
+        // Turns chain through cruise; after two in a row the school does
+        // something else first (back-to-back turns read as disruptive).
+        if (this.turnsInARow >= 2) {
+          this.turnsInARow = 0;
+          return r < 0.5 ? M_MILL : M_HOVER;
+        }
         return r < 0.5 ? M_TURN : r < 0.72 ? M_MILL : M_HOVER;
       case M_TURN:
         return M_CRUISE;
@@ -797,6 +1177,10 @@ export class ParticleSystem {
         return r < 0.55 ? M_TURN : r < 0.75 ? M_HOVER : M_CRUISE;
       case M_HOVER:
         return r < 0.55 ? M_CRUISE : M_TURN;
+      case M_CONTRACT:
+        // Release into cruise, not a turn: contract → turn → cruise → turn
+        // chained into near-continuous turning.
+        return M_CRUISE;
       default:
         return M_CRUISE;
     }
@@ -810,8 +1194,10 @@ export class ParticleSystem {
     const s = Math.sin(ang);
     const hx = this.headX * c - this.headY * s;
     const hy = this.headX * s + this.headY * c;
-    let hz = this.headZ + (Math.random() - 0.5) * 0.4;
-    hz = Math.max(-0.3, Math.min(0.3, hz));
+    // Pitch scales with roamDepth (1 = v3's ±0.3).
+    const zd = Math.max(0, Math.min(1, this.params.roamDepth ?? 1));
+    let hz = this.headZ + (Math.random() - 0.5) * 0.4 * zd;
+    hz = Math.max(-0.3 * zd, Math.min(0.3 * zd, hz));
     const l = Math.sqrt(hx * hx + hy * hy + hz * hz) || 1;
     this.headX = hx / l;
     this.headY = hy / l;
@@ -819,26 +1205,28 @@ export class ParticleSystem {
   }
 
   /**
-   * Seed a turn through a vanguard: one cluster darts onto the new heading
-   * and alignment cascades the turn through the school as a visible wave.
+   * Seed a turn through a vanguard: one pocket darts onto the new heading
+   * and the wave front grows from its leader. A ragged pocket with a soft
+   * falloff and no glow: a hard disc darting and lighting up together read
+   * as "a perfect circle turning" once the school became a sheet.
    */
-  private seedTurnVanguard(): void {
-    const leader = (Math.random() * this.count) | 0;
+  private seedTurnVanguard(leader: number): void {
     const lx = this.pos[leader * 3];
     const ly = this.pos[leader * 3 + 1];
     const lz = this.pos[leader * 3 + 2];
-    const r2 = 3.5 * 3.5;
     for (let i = 0; i < this.count; i++) {
       const dx = this.pos[i * 3] - lx;
       const dy = this.pos[i * 3 + 1] - ly;
       const dz = this.pos[i * 3 + 2] - lz;
-      if (dx * dx + dy * dy + dz * dz > r2) continue;
-      const dart = 2.0 + Math.random() * 1.4;
+      const rv = 3.5 * (0.55 + 0.9 * Math.random());
+      const dv = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (dv > rv) continue;
+      const w = 1 - dv / rv;
+      const dart = (1.9 + Math.random() * 1.0) * (0.4 + 0.6 * w);
       this.vel[i * 3] += this.headX * dart;
       this.vel[i * 3 + 1] += this.headY * dart;
       this.vel[i * 3 + 2] += this.headZ * dart * 0.6;
       this.gaitClock[i] = 0;
-      this.glow[i] = Math.max(this.glow[i], 0.5);
     }
   }
 
@@ -852,9 +1240,60 @@ export class ParticleSystem {
       if (P.startle > 0.02 && this.mood !== M_STARTLE) this.startle();
     }
 
+    // Resting shivers: per-fish fear and a dart, never a mood change.
+    const shiver = P.shiver ?? 0;
+    if (shiver > 0.02) {
+      this.shiverClock -= dt;
+      if (this.shiverClock <= 0) {
+        this.shiverClock = (6 + Math.random() * 6) / Math.max(0.05, shiver);
+        this.spawnShiver();
+      }
+    }
+
+    // The front keeps growing after the turn mood ends until it has
+    // crossed the school; a new turn re-arms it from zero.
+    if (this.turnActive > 0) {
+      this.turnRadius += GPU_TUNING.turnWaveSpeed * dt;
+      if (this.turnRadius > 3.0 * this.rmsRadius + 2) this.turnActive = 0;
+    }
     this.moodTimer -= dt;
     if (this.moodTimer <= 0) {
-      this.enterMood(this.mood === M_STARTLE ? M_CRUISE : this.pickNextMood());
+      // Pinned: re-enter so turn keeps turning and contract keeps contracting.
+      if (this.forced !== null) this.enterForced();
+      else this.enterMood(this.mood === M_STARTLE ? M_CRUISE : this.pickNextMood());
+    }
+
+    // Alarm collapse: once a real scare subsides (alarm under half its
+    // recent peak), the school collapses in on itself. Unreachable at
+    // collapse 0.
+    this.alarm += (this.meanFear - this.alarm) * (1 - Math.exp(-dt / 0.15));
+    this.alarmPeak += (this.alarm - this.alarmPeak) * (1 - Math.exp(-dt));
+    if (this.alarm > this.alarmPeak) this.alarmPeak = this.alarm;
+    this.alarmCooldown -= dt;
+    if (
+      P.collapse > 0 &&
+      this.forced === null &&
+      this.alarmPeak > 0.08 &&
+      this.alarm < 0.5 * this.alarmPeak &&
+      this.mood !== M_CONTRACT &&
+      this.mood !== M_STARTLE &&
+      this.alarmCooldown <= 0
+    ) {
+      // A running turn finishes first: a contraction cutting it short read
+      // as a new turn starting before the last one ended.
+      this.alarmPending = true;
+      this.alarmPeak = this.alarm;
+      this.alarmCooldown = 4;
+    }
+    if (
+      this.alarmPending &&
+      this.mood !== M_TURN &&
+      this.mood !== M_CONTRACT &&
+      this.mood !== M_STARTLE
+    ) {
+      this.alarmPending = false;
+      this.contractFromAlarm = true;
+      this.enterMood(M_CONTRACT);
     }
 
     // Bend the heading toward home when the school strays — it turns back
@@ -881,6 +1320,12 @@ export class ParticleSystem {
     this.dirMill += (this.tgtMill - this.dirMill) * k;
     this.dirDrive += (this.tgtDrive - this.dirDrive) * k;
     this.dirSpeed += (this.tgtSpeed - this.dirSpeed) * k;
+    // Snap home so an idle lever leaves separation and herd at exactly the
+    // user's weight (the ease alone only approaches it).
+    this.dirSep += (this.tgtSep - this.dirSep) * k;
+    if (Math.abs(this.tgtSep - this.dirSep) < 1e-4) this.dirSep = this.tgtSep;
+    this.dirHerd += (this.tgtHerd - this.dirHerd) * k;
+    if (Math.abs(this.tgtHerd - this.dirHerd) < 1e-4) this.dirHerd = this.tgtHerd;
   }
 
   // ------------------------------------------------------------------
@@ -913,7 +1358,11 @@ export class ParticleSystem {
     dz /= dl;
 
     const duration = 6 + Math.random() * 7;
-    const recruitR2 = 2.8 * 2.8;
+    // Large groups recruit a bigger pocket so they leave as a sub-school,
+    // not a thinned-out cloud (v3's 2.8 at its sizes). groupSize is read
+    // as a fish count here; the GPU reads it per 2,600 fish.
+    const recruitR = 2.8 + 2.0 * Math.min(1, P.groupSize / 200);
+    const recruitR2 = recruitR * recruitR;
     let recruited = 0;
     const cap = Math.max(1, Math.round(P.groupSize));
 
@@ -969,6 +1418,123 @@ export class ParticleSystem {
     for (let i = 0; i < n; i++) {
       this.gridEntries[this.gridCursor[this.cellOf[i]]++] = i;
     }
+
+    // Fine grid: starts double as the scatter cursors, then shift back.
+    const fc = this.fineCount;
+    const fs = this.fineStart;
+    fc.fill(0);
+    for (let i = 0; i < n; i++) {
+      const idx =
+        ParticleSystem.fineCoord(this.pos[i * 3]) +
+        ParticleSystem.fineCoord(this.pos[i * 3 + 1]) * FD +
+        ParticleSystem.fineCoord(this.pos[i * 3 + 2]) * FD2;
+      this.fineCellOf[i] = idx;
+      fc[idx]++;
+    }
+    sum = 0;
+    for (let c = 0; c < FCELLS; c++) {
+      fs[c] = sum;
+      sum += fc[c];
+    }
+    fs[FCELLS] = sum;
+    for (let i = 0; i < n; i++) {
+      this.fineEntries[fs[this.fineCellOf[i]]++] = i;
+    }
+    for (let c = 0; c < FCELLS; c++) fs[c] -= fc[c];
+  }
+
+  /** Clamped fine-grid coordinate along one axis. */
+  private static fineCoord(v: number): number {
+    const c = Math.floor(v * F_INV) + (FD >> 1);
+    return c < 0 ? 0 : c >= FD ? FD - 1 : c;
+  }
+
+  /**
+   * Crowd dim: fade each fish by (nRef / nLocal)^(0.8·crowdDim), where
+   * nLocal is the fish count around it and nRef the school's mean, so only
+   * local excess dims and a contracted school keeps its brightness.
+   *
+   * nLocal must be position-continuous or the fade bands along grid
+   * planes: each cell's count is weighted by a separable tent of its
+   * center's offset from the fish (in cells, w = 0 at |d| = 1.5), the same
+   * stencil as the GPU sprite shader, so a face crossing swaps slabs at
+   * zero weight.
+   */
+  private updateCrowdFade(dt: number): void {
+    const dim = this.params.crowdDim ?? 0;
+    const fade = this.fade;
+    const attr = this.geometry.attributes.aFade as THREE.BufferAttribute;
+    if (!(dim > 0)) {
+      if (this.crowdOn) {
+        fade.fill(1);
+        attr.needsUpdate = true;
+        this.crowdOn = false;
+        this.nRef = -1;
+      }
+      return;
+    }
+    this.crowdOn = true;
+    const n = this.count;
+    const pos = this.pos;
+    const inv = 1 / (Math.max(0.5, this.params.perception) * 0.5);
+    const half = CD >> 1;
+    const counts = this.crowdCount;
+    counts.fill(0);
+    const coord = (v: number): number => {
+      const c = Math.floor(v * inv) + half;
+      return c < 0 ? 0 : c >= CD ? CD - 1 : c;
+    };
+    for (let i = 0; i < n; i++) {
+      counts[coord(pos[i * 3]) + coord(pos[i * 3 + 1]) * CD + coord(pos[i * 3 + 2]) * CD2]++;
+    }
+
+    // Pass 1: nLocal into fade (as scratch) and the school's mean.
+    let sum = 0;
+    for (let i = 0; i < n; i++) {
+      const gx = pos[i * 3] * inv + half;
+      const gy = pos[i * 3 + 1] * inv + half;
+      const gz = pos[i * 3 + 2] * inv + half;
+      const fx = coord(pos[i * 3]);
+      const fy = coord(pos[i * 3 + 1]);
+      const fz = coord(pos[i * 3 + 2]);
+      const rx = Math.max(0, Math.min(1, gx - fx));
+      const ry = Math.max(0, Math.min(1, gy - fy));
+      const rz = Math.max(0, Math.min(1, gz - fz));
+      let wSum = 0;
+      let nSum = 0;
+      for (let oz = -1; oz <= 1; oz++) {
+        const cz = fz + oz;
+        if (cz < 0 || cz >= CD) continue;
+        const wz = Math.max(0, 1 - Math.abs(oz + 0.5 - rz) / 1.5);
+        for (let oy = -1; oy <= 1; oy++) {
+          const cy = fy + oy;
+          if (cy < 0 || cy >= CD) continue;
+          const wzy = wz * Math.max(0, 1 - Math.abs(oy + 0.5 - ry) / 1.5);
+          const row = cy * CD + cz * CD2;
+          for (let ox = -1; ox <= 1; ox++) {
+            const cx = fx + ox;
+            if (cx < 0 || cx >= CD) continue;
+            const w = wzy * Math.max(0, 1 - Math.abs(ox + 0.5 - rx) / 1.5);
+            nSum += w * counts[cx + row];
+            wSum += w;
+          }
+        }
+      }
+      const nLocal = (nSum / Math.max(wSum, 1e-6)) * 27;
+      fade[i] = nLocal;
+      sum += nLocal;
+    }
+    // One-pole smoothed (0.5 s) so the reference never flickers.
+    const nRefNow = sum / Math.max(1, n);
+    this.nRef = this.nRef < 0 ? nRefNow : this.nRef + (nRefNow - this.nRef) * (1 - Math.exp(-dt / 0.5));
+
+    // Pass 2: the fade itself. Sparse fish are never boosted.
+    const k = 0.8 * dim;
+    const nRef = this.nRef;
+    for (let i = 0; i < n; i++) {
+      fade[i] = Math.pow(Math.min(1, nRef / Math.max(fade[i], 1)), k);
+    }
+    attr.needsUpdate = true;
   }
 
   // ------------------------------------------------------------------
@@ -977,6 +1543,9 @@ export class ParticleSystem {
 
   update(deltaTime: number): void {
     const P = this.params;
+    // The panel writes params directly, so the share is polled. Ahead of
+    // the dt check so a paused school still recolors.
+    if (P.accentShare !== this.lastAccentShare) this.applyPaletteColors();
     const dt = Math.min(deltaTime, 0.05) * P.timeScale;
     if (dt <= 0) return;
     this.time += dt;
@@ -994,6 +1563,8 @@ export class ParticleSystem {
     const perception2 = perception * perception;
     const sepR = perception * TUNING.separationRatio;
     const arriveR = perception * TUNING.arriveRatio;
+    const pushR = Math.min(sepR * GPU_TUNING.pairPushRange, GPU_TUNING.fineCellSize);
+    const pushR2 = pushR * pushR;
     const invCell = 1 / perception;
     const dragF = Math.exp(-P.drag * dt);
     const energyDecay = Math.exp(-P.flashDecay * dt);
@@ -1014,6 +1585,19 @@ export class ParticleSystem {
     const pz = this.pointer.z;
     const splashBoost = Math.min(2.5, this.mouseSpeed * P.splash * 0.6);
     const igniteRate = this.mouseSpeed * P.splash * 1.2;
+
+    // The levers (each 0 = v3).
+    const shape = P.shape ?? 0;
+    const sheet = P.sheet ?? 0;
+    const herd = P.herd ?? 0;
+    const rally = P.rally ?? 0;
+    const evade = P.evade ?? 0;
+    const flight = P.flight ?? 0;
+    // Below 1: smoothstep's edges must not meet.
+    const bite = Math.min(0.9, Math.max(0, P.bite ?? 0));
+    // The "still threatened" band shrinks with bite: a crisp predator must
+    // not hold a wide halo open around a resting cursor. v3's 1.4 at 0.
+    const threatBand = 1.4 - 0.4 * bite;
 
     this.mouseSpeed *= Math.exp(-2.5 * dt);
 
@@ -1042,16 +1626,92 @@ export class ParticleSystem {
     const tpy = py + vhy * lead;
     const tpz = pz + vhz * lead;
 
+    // The strike: a flick (rest bursting into speed) detonates a V-blast
+    // at the lunge tip. Sustained fast movement never triggers it.
+    this.strikeCooldown -= dt;
+    if (pvm < GPU_TUNING.strikeSpeed * 0.45) this.lastSlowTime = t;
+    if (
+      pointerOn &&
+      pvm > GPU_TUNING.strikeSpeed &&
+      t - this.lastSlowTime < GPU_TUNING.strikeFlickWindow &&
+      this.strikeCooldown <= 0
+    ) {
+      this.strikeCooldown = GPU_TUNING.strikeCooldown;
+      this.strike(tpx, tpy, tpz, vhx, vhy, vhz);
+    }
+
     // Roaming home region: a slow-wandering anchor the school patrols around.
     const roamR = (P.containRadius * 0.75 * P.roam) / 1.5;
     const targetX =
       (Math.sin(t * 0.13) + 0.5 * Math.sin(t * 0.23 + 2.1)) * roamR;
     const targetY =
       (Math.sin(t * 0.107 + 1.3) + 0.5 * Math.sin(t * 0.19)) * roamR * 0.8;
-    const targetZ = Math.sin(t * 0.147 + 4.2) * roamR * 0.45;
+    const targetZ = Math.sin(t * 0.147 + 4.2) * roamR * 0.45
+      * Math.max(0, Math.min(1, P.roamDepth ?? 1));
+
+    // Evade: the school dodges a parked predator as a body. Its herd center
+    // and roam target shift away from the pointer and the heading bends off
+    // it, so the threat ends up at the edge with the body streaming past.
+    let evW = 0;
+    let evNX = 0;
+    let evNY = 0;
+    let evNZ = 0;
+    if (pointerOn && evade > 0) {
+      const dx = this.centroidX - px;
+      const dy = this.centroidY - py;
+      const dz = this.centroidZ - pz;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * 0.45 * (dz * 0.45));
+      // Full strength until the pointer is outside the school, then a short
+      // ramp: a linear fade from the center settled with the cursor still
+      // inside the edge.
+      const edge = Math.max(2, this.rmsRadius * 1.6);
+      evW = evade * Math.min(1, Math.max(0, (edge * 1.25 - dist) / (edge * 0.25)));
+      if (dist < 0.3) {
+        // Pointer on the centroid: step aside across the heading.
+        const hl = Math.hypot(this.headX, this.headY) || 1;
+        evNX = -this.headY / hl;
+        evNY = this.headX / hl;
+      } else {
+        const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        evNX = dx / len;
+        evNY = dy / len;
+        evNZ = dz / len;
+      }
+    }
+    const evTarget = P.containRadius * 0.9 * evW;
+    // One pole (0.35 s) so the center never jumps.
+    const ek = 1 - Math.exp(-dt / 0.35);
+    this.evadeX += (evNX * evTarget - this.evadeX) * ek;
+    this.evadeY += (evNY * evTarget - this.evadeY) * ek;
+    this.evadeZ += (evNZ * evTarget - this.evadeZ) * ek;
+    if (
+      !(evade > 0) &&
+      Math.abs(this.evadeX) + Math.abs(this.evadeY) + Math.abs(this.evadeZ) < 1e-4
+    ) {
+      this.evadeX = this.evadeY = this.evadeZ = 0;
+    }
+    const roamX = targetX + this.evadeX;
+    const roamY = targetY + this.evadeY;
+    const roamZ = targetZ + this.evadeZ;
 
     // The school's mind: moods, heading, false alarms.
     this.updateDirector(dt, targetX, targetY);
+
+    // Bend the heading away from the predator, like the home bend.
+    if (evW > 0) {
+      const xl = Math.hypot(evNX, evNY);
+      if (xl > 1e-6) {
+        const k = Math.min(1, evW * dt * 4);
+        const nx = this.headX + (evNX / xl - this.headX) * k;
+        const ny = this.headY + (evNY / xl - this.headY) * k;
+        const nz = this.headZ * (1 - k * 0.5);
+        const l = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+        this.headX = nx / l;
+        this.headY = ny / l;
+        this.headZ = nz / l;
+      }
+    }
+
     const headX = this.headX;
     const headY = this.headY;
     const headZ = this.headZ;
@@ -1062,13 +1722,36 @@ export class ParticleSystem {
     const driveW = P.schoolDrive * dirDrive;
     const gaitRate = 0.55 + dirSpeed * 1.3;
     const millF = (P.mill + this.dirMill) * 2.6;
+    // The director's separation gain: 1 except the release pop.
+    const sepW = P.separation * this.dirSep;
+    const herdGain = this.dirHerd;
 
     // Group-level recentering: gentle, the cruise dynamics do the framing.
-    const reCenterX = (targetX - this.centroidX) * 0.22;
-    const reCenterY = (targetY - this.centroidY) * 0.22;
-    const reCenterZ = (targetZ - this.centroidZ) * 0.22;
+    const reCenterX = (roamX - this.centroidX) * 0.22;
+    const reCenterY = (roamY - this.centroidY) * 0.22;
+    const reCenterZ = (roamZ - this.centroidZ) * 0.22;
     const cenX = this.centroidX;
     const cenY = this.centroidY;
+    const cenZ = this.centroidZ;
+    // Herd/rally/regroup aim here: with evade on, the center shifted off
+    // a parked predator, so the school pulls away from the threat instead
+    // of into it.
+    const evOn = evade > 0.001;
+    const hcX = evOn ? cenX + this.evadeX : cenX;
+    const hcY = evOn ? cenY + this.evadeY : cenY;
+    const hcZ = evOn ? cenZ + this.evadeZ : cenZ;
+
+    // The turn wave: until the front (a sphere growing from the vanguard
+    // fish) reaches a fish it keeps the old heading, so the turn is led by
+    // a small group and spreads by alignment. Last frame's leader position.
+    const turnOn = this.turnActive > 0 && this.turnIndex < n;
+    const tcx = turnOn ? pos[this.turnIndex * 3] : 0;
+    const tcy = turnOn ? pos[this.turnIndex * 3 + 1] : 0;
+    const tcz = turnOn ? pos[this.turnIndex * 3 + 2] : 0;
+    const turnR2 = this.turnRadius * this.turnRadius;
+    const oldHX = this.turnOldX;
+    const oldHY = this.turnOldY;
+    const oldHZ = this.turnOldZ;
 
     this.buildGrid(invCell);
 
@@ -1095,6 +1778,8 @@ export class ParticleSystem {
     let cSumY = 0;
     let cSumZ = 0;
     let cNum = 0;
+    let spreadSum = 0;
+    let fearSum = 0;
 
     for (let i = 0; i < n; i++) {
       const i3 = i * 3;
@@ -1107,6 +1792,17 @@ export class ParticleSystem {
       const m = this.mode[i];
       const social = this.social[i];
       const spdF = this.speedFactor[i];
+      const seed = this.seeds[i];
+
+      let mhX = headX, mhY = headY, mhZ = headZ;
+      if (turnOn) {
+        const ddx = x - tcx;
+        const ddy = y - tcy;
+        const ddz = z - tcz;
+        if (ddx * ddx + ddy * ddy + ddz * ddz > turnR2) {
+          mhX = oldHX; mhY = oldHY; mhZ = oldHZ;
+        }
+      }
 
       // ---- Neighbor pass: boids accumulators + contagion pressure ----
       let sepX = 0, sepY = 0, sepZ = 0;
@@ -1177,6 +1873,38 @@ export class ParticleSystem {
         }
       }
 
+      // ---- Fine collision grid: continuous close-range personal space ----
+      let hpX = 0, hpY = 0, hpZ = 0;
+      {
+        const fx = ParticleSystem.fineCoord(x);
+        const fy = ParticleSystem.fineCoord(y);
+        const fz = ParticleSystem.fineCoord(z);
+        for (let oz = fz > 0 ? fz - 1 : 0; oz <= fz + 1 && oz < FD; oz++) {
+          for (let oy = fy > 0 ? fy - 1 : 0; oy <= fy + 1 && oy < FD; oy++) {
+            const row = oy * FD + oz * FD2;
+            for (let ox = fx > 0 ? fx - 1 : 0; ox <= fx + 1 && ox < FD; ox++) {
+              const cell = ox + row;
+              const start = this.fineStart[cell];
+              const end = start + this.fineCount[cell];
+              for (let e = start; e < end; e++) {
+                const j = this.fineEntries[e];
+                if (j === i) continue;
+                const dx = pos[j * 3] - x;
+                const dy = pos[j * 3 + 1] - y;
+                const dz = pos[j * 3 + 2] - z;
+                const d2 = dx * dx + dy * dy + dz * dz;
+                if (d2 >= pushR2) continue;
+                const d = Math.max(Math.sqrt(d2), 1e-4);
+                const k = ((1 - d / pushR) * GPU_TUNING.pairPush) / d;
+                hpX -= dx * k;
+                hpY -= dy * k;
+                hpZ -= dz * k;
+              }
+            }
+          }
+        }
+      }
+
       // ---- Excitable medium: catch fire from glowing neighbors ----
       if (this.refract[i] > 0) this.refract[i] -= dt;
       if (
@@ -1206,27 +1934,44 @@ export class ParticleSystem {
         fearI += (maxFear * TUNING.fearSpreadCeiling - fearI) * fearSpreadDt;
       }
       fear[i] = fearI < 0.005 ? 0 : fearI;
+      if (fearI < 0.005) fearI = 0;
 
       // Predator proximity, depth-squashed, measured against the lead point
       // (needed before steering: fear means scatter while the threat is
-      // close, regroup once it's gone).
-      let pdx = 0, pdy = 0, pdz = 0, pd = 1e9;
+      // close, regroup once it's gone). uNorm is "how deep into the danger
+      // zone" (1 = its edge).
+      let pdx = 0, pdy = 0, pdz = 0, pd = 1e9, uNorm = 1e9;
       if (pointerOn) {
         pdx = x - tpx;
         pdy = y - tpy;
         pdz = z - tpz;
         const pdzS = pdz * 0.45;
         pd = Math.sqrt(pdx * pdx + pdy * pdy + pdzS * pdzS) || 1e-4;
+        // Each fish has its own zone radius so the hollow is never a clean
+        // circle: a static per-fish jitter (0.75-1.25x) and an upstream
+        // stretch (a fish swimming toward the predator shies off up to 60%
+        // earlier). A real vacuole is a teardrop against the flow.
+        const spd0 = Math.sqrt(vx * vx + vy * vy + vz * vz);
+        const toward =
+          spd0 > 0.2 ? Math.max(0, -(vx * pdx + vy * pdy + vz * pdz) / (spd0 * pd)) : 0;
+        uNorm = pd / (mouseR * (0.75 + 0.5 * seed) * (1 + 0.6 * toward));
       }
-      const threatNear = pd < mouseR * 1.4;
+      const threatNear = uNorm < threatBand;
+      // Bite moves the falloff's inner edge out: nothing until a fish is
+      // close, then the full bolt. Bite 0 is v3's u*u*(3-2u) exactly.
+      const predFall = pointerOn && uNorm < 1 ? 1 - smoothstep(bite, 1, uNorm) : 0;
+      // Flight: fear above 1 - flight keeps a fish bolting past the threat
+      // band, so hit fish (and those panic spread infects) stream out of
+      // the school before regrouping. Needs the pointer for a direction.
+      const inFlight = flight > 0.001 && pointerOn && fearI > 1 - flight;
 
       // After a strike, far-flung survivors commit to returning: RETURN mode
       // persists until they actually reach the shoal, outliving the fear
       // itself (takes effect next frame).
-      if (m === FLOCK && fearI > 0.12 && !threatNear) {
+      if (m === FLOCK && fearI > 0.12 && !threatNear && !inFlight) {
         const hx = x - cenX;
         const hy = y - cenY;
-        const hz = z - this.centroidZ;
+        const hz = z - cenZ;
         if (hx * hx + hy * hy + hz * hz > breatheR * breatheR * 0.72) {
           this.mode[i] = RETURN;
           this.modeTimer[i] = 30;
@@ -1235,10 +1980,18 @@ export class ParticleSystem {
 
       // ---- Steering forces ----
       let ax = 0, ay = 0, az = 0;
+      // Lifts the hard speed cap for the herd and rally rushes; 0 = v3.
+      let rallyBoost = 0;
+      let pkX = 0, pkY = 0, pkZ = 0;
       const maxSpeed =
         maxSpeedBase *
         spdF *
         (1 + energy[i] * TUNING.energySpeedBoost + fearI * TUNING.fearSpeedBoost);
+
+      // During an inburst, lit particles allow the crowd to condense —
+      // when the flash fades, separation snaps back and the bubble pops.
+      const relaxMul =
+        this.pulseSign[i] < 0 ? 1 - Math.min(1, energy[i]) * TUNING.inburstSepRelax : 1;
 
       if (found > 0) {
         // Separation (all modes — personal space is universal)
@@ -1252,24 +2005,41 @@ export class ParticleSystem {
             const f = MAX_FORCE / sm;
             sx *= f; sy *= f; sz *= f;
           }
-          // During an inburst, lit particles allow the crowd to condense —
-          // when the flash fades, separation snaps back and the bubble pops.
-          let sep = P.separation;
-          if (this.pulseSign[i] < 0) {
-            sep *= 1 - Math.min(1, energy[i]) * TUNING.inburstSepRelax;
-          }
-          ax += sx * sep;
-          ay += sy * sep;
-          az += sz * sep;
+          ax += sx * sepW * relaxMul;
+          ay += sy * sepW * relaxMul;
+          az += sz * sepW * relaxMul;
         }
 
-        if (m === FLOCK) {
+        // Collision pushout: obeys the inburst relax (bubbles must
+        // condense) and the user's separation slider, not the release pop.
+        // Fear damps it and a near threat disables it: threatened schools
+        // pack tighter, and shoves at the cleared column's wall would pump
+        // fish into it. Integrated beside the steering sum, because
+        // dodging a neighbor is not agitation and must not trip the glow.
+        if (!threatNear) {
+          const k = Math.min(1, P.separation) * relaxMul * (1 - fearI);
+          pkX = hpX * k;
+          pkY = hpY * k;
+          pkZ = hpZ * k;
+        }
+
+        // Wanderers cohere too, so a recruited group peels off as a
+        // sub-school instead of dust; away from the cloud their only
+        // neighbors are each other, so they can still leave it.
+        if (m === FLOCK || m === WANDER) {
           // Cohesion — steer toward local center of mass, with "arrival"
           // damping so particles already inside the cluster relax instead
           // of endlessly compressing it.
           let tx = cohX / found - x;
           let ty = cohY / found - y;
-          let tz = cohZ / found - z;
+          // Sheet: pull harder toward the neighbors' depth. x1 at 0.
+          let tz = (cohZ / found - z) * (1 + 2 * sheet);
+          // Shape: anisotropic before arrival damping, so damping still
+          // governs the body and the stretch is a gain, not a spring.
+          if (shape >= 0.001) {
+            shapeAniso(tx, ty, tz, headX, headY, headZ, shape);
+            tx = ANISO[0]; ty = ANISO[1]; tz = ANISO[2];
+          }
           let tl = Math.sqrt(tx * tx + ty * ty + tz * tz);
           if (tl > 1e-5) {
             const arrive = maxSpeed * Math.min(1, tl / arriveR);
@@ -1281,10 +2051,10 @@ export class ParticleSystem {
               const f = MAX_FORCE / tl;
               tx *= f; ty *= f; tz *= f;
             }
-            // Threat close: panic scatters the shoal. Threat gone: fear
-            // flips into an urgent drive to get back to the group.
+            // Threat close (or in flight): panic scatters the shoal. Threat
+            // gone: fear flips into an urgent drive to get back to the group.
             let coh = P.cohesion * dirCoh * social;
-            if (threatNear && fearI > 0.01) {
+            if ((threatNear && fearI > 0.01) || inFlight) {
               coh *= 1 - fearI * 0.6;
             } else if (fearI > 0.08) {
               // sqrt keeps the regroup urge alive — but not into the tail,
@@ -1297,38 +2067,37 @@ export class ParticleSystem {
           }
         }
 
-        if (m === FLOCK || m === RETURN) {
-          // Alignment — match the neighbors' heading at their actual pace
-          // (normalizing to maxSpeed would make an idle swarm race around).
-          let mx = alnX / found;
-          let my = alnY / found;
-          let mz = alnZ / found;
-          const ml = Math.sqrt(mx * mx + my * my + mz * mz);
-          if (ml > 1e-5) {
-            const match = Math.min(maxSpeed, ml * 1.15);
-            mx = (mx / ml) * match - vx;
-            my = (my / ml) * match - vy;
-            mz = (mz / ml) * match - vz;
-            const mm = Math.sqrt(mx * mx + my * my + mz * mz);
-            if (mm > MAX_FORCE) {
-              const f = MAX_FORCE / mm;
-              mx *= f; my *= f; mz *= f;
-            }
-            // ...but a fleeing (or turning) school moves as one.
-            const aln = P.alignment * dirAlign * social * (1 + fearI * 0.8);
-            ax += mx * aln;
-            ay += my * aln;
-            az += mz * aln;
+        // Alignment — match the neighbors' heading at their actual pace
+        // (normalizing to maxSpeed would make an idle swarm race around).
+        // Every mode, so a wander group swims as one body.
+        let mx = alnX / found;
+        let my = alnY / found;
+        let mz = alnZ / found;
+        const ml = Math.sqrt(mx * mx + my * my + mz * mz);
+        if (ml > 1e-5) {
+          const match = Math.min(maxSpeed, ml * 1.15);
+          mx = (mx / ml) * match - vx;
+          my = (my / ml) * match - vy;
+          mz = (mz / ml) * match - vz;
+          const mm = Math.sqrt(mx * mx + my * my + mz * mz);
+          if (mm > MAX_FORCE) {
+            const f = MAX_FORCE / mm;
+            mx *= f; my *= f; mz *= f;
           }
+          // ...but a fleeing (or turning) school moves as one.
+          const aln = P.alignment * dirAlign * social * (1 + fearI * 0.8);
+          ax += mx * aln;
+          ay += my * aln;
+          az += mz * aln;
         }
       }
 
       // ---- The school's collective will: cruise along the shared heading ----
       if (m === FLOCK && driveW > 0.01) {
         const want = maxSpeedBase * spdF * dirSpeed;
-        let wx = headX * want - vx;
-        let wy = headY * want - vy;
-        let wz = headZ * want - vz;
+        let wx = mhX * want - vx;
+        let wy = mhY * want - vy;
+        let wz = mhZ * want - vz;
         const wl = Math.sqrt(wx * wx + wy * wy + wz * wz);
         if (wl > MAX_FORCE) {
           const f = MAX_FORCE / wl;
@@ -1352,10 +2121,17 @@ export class ParticleSystem {
         az += (x / rr) * P.swirl;
       }
       if (P.jitter > 0) {
-        const seed = this.seeds[i];
         ax += Math.sin(t * 1.9 + seed * 61.0) * P.jitter * 1.2;
         ay += Math.sin(t * 1.6 + seed * 47.0) * P.jitter * 1.2;
         az += Math.sin(t * 2.2 + seed * 29.0) * P.jitter * 0.8;
+      }
+
+      // ---- Sheet: flatten the school toward the view plane ----
+      // A school many fish deep along the camera axis averages its density
+      // waves away; a few deep, waves, holes and collapses show. A damped
+      // spring in z toward the school's mean depth.
+      if (sheet > 0.001 && (m === FLOCK || m === WANDER)) {
+        az += (cenZ - z) * (sheet * 6) - vz * (sheet * 2);
       }
 
       // ---- Mode behaviors ----
@@ -1363,12 +2139,37 @@ export class ParticleSystem {
 
       if (m === FLOCK) {
         // Soft anchor plus group recentering, both chasing the roam target.
-        const hx = x - targetX;
-        const hy = y - targetY;
-        const hz = z - targetZ;
-        ax += -hx * 0.02 + reCenterX;
-        ay += -hy * 0.02 + reCenterY;
-        az += -hz * 0.02 + reCenterZ;
+        const hx = x - roamX;
+        const hy = y - roamY;
+        const hz = z - roamZ;
+        let anX = -hx * 0.02, anY = -hy * 0.02, anZ = -hz * 0.02;
+        // The resting body elongates too: same anisotropy on the anchor.
+        if (shape >= 0.001) {
+          shapeAniso(anX, anY, anZ, headX, headY, headZ, shape);
+          anX = ANISO[0]; anY = ANISO[1]; anZ = ANISO[2];
+        }
+        ax += anX + reCenterX;
+        ay += anY + reCenterY;
+        az += anZ + reCenterZ;
+        // Selfish herd: every fish wants deeper into the school; rel² makes
+        // edge fish rush and core fish idle. No arrival damping on purpose:
+        // separation and crowd dim push back, and that standoff is the pulse.
+        if (herd > 0.001) {
+          const hvx = hcX - x;
+          const hvy = hcY - y;
+          const hvz = hcZ - z;
+          const hdc = Math.sqrt(hvx * hvx + hvy * hvy + hvz * hvz);
+          if (hdc > 0.3) {
+            const rel = Math.min(2, hdc / Math.max(1, P.containRadius * 0.8));
+            const g = (herd * herdGain * 12 * rel * rel) / hdc;
+            ax += hvx * g;
+            ay += hvy * g;
+            az += hvz * g;
+          }
+          // An alarm collapse lifts the speed cap so the rush in is
+          // visible. Nothing at herdGain 1 (every mood but contract).
+          rallyBoost = Math.max(rallyBoost, 0.5 * herd * (herdGain - 1));
+        }
         const rHome = Math.sqrt(hx * hx + hy * hy + hz * hz);
         if (rHome > breatheR) {
           const over = rHome - breatheR;
@@ -1406,9 +2207,9 @@ export class ParticleSystem {
       } else {
         // RETURN — home in on the swarm centroid.
         this.modeTimer[i] -= dt;
-        let hx = this.centroidX - x;
-        let hy = this.centroidY - y;
-        let hz = this.centroidZ - z;
+        const hx = cenX - x;
+        const hy = cenY - y;
+        const hz = cenZ - z;
         const hd = Math.sqrt(hx * hx + hy * hy + hz * hz) || 1;
         ax += (hx / hd) * P.returnPull * 3.5;
         ay += (hy / hd) * P.returnPull * 3.5;
@@ -1427,13 +2228,48 @@ export class ParticleSystem {
       // When the predator is moving, the heading parts sideways around its
       // line of travel and drops behind it: the fountain maneuver.
       if (pointerOn) {
-        if (pd < mouseR) {
-          const u = pd / mouseR;
-          const fall = 1 - u * u * (3 - 2 * u); // 1 at cursor, 0 at edge
+        let fdx = pdx / pd;
+        let fdy = pdy / pd;
+        let fdz = pdz / pd;
+        // Evade around a slow predator: blend the radial escape toward the
+        // fish's own sideways momentum, so the hollow is a ring of fish
+        // sliding past rather than a static shell. Radial at evade 0.
+        if (evOn && pvm <= 1.5) {
+          const pl = Math.max(Math.sqrt(pdx * pdx + pdy * pdy + pdz * pdz), 1e-6);
+          const erx = pdx / pl;
+          const ery = pdy / pl;
+          const erz = pdz / pl;
+          const vr = vx * erx + vy * ery + vz * erz;
+          let tgx = vx - erx * vr;
+          let tgy = vy - ery * vr;
+          let tgz = vz - erz * vr;
+          let tl = Math.sqrt(tgx * tgx + tgy * tgy + tgz * tgz);
+          if (tl < 0.15) {
+            // Barely moving sideways: pick a side per fish so both occur.
+            const side = seed > 0.5 ? 1 : -1;
+            tgx = -ery * side;
+            tgy = erx * side;
+            tgz = 0;
+            tl = Math.sqrt(tgx * tgx + tgy * tgy);
+          }
+          // tl ~ 0 only when the predator is straight along z; stay radial.
+          if (tl > 1e-5) {
+            const ex = erx * (1 - 0.6 * evade) + (tgx / tl) * (1.2 * evade);
+            const ey = ery * (1 - 0.6 * evade) + (tgy / tl) * (1.2 * evade);
+            const ez = erz * (1 - 0.6 * evade) + (tgz / tl) * (1.2 * evade);
+            const el = Math.max(Math.sqrt(ex * ex + ey * ey + ez * ez), 1e-6);
+            fdx = ex / el;
+            fdy = ey / el;
+            fdz = ez / el;
+          }
+        }
 
-          let ex = pdx / pd;
-          let ey = pdy / pd;
-          let ez = pdz / pd;
+        if (uNorm < 1) {
+          const fall = predFall;
+
+          let ex = fdx;
+          let ey = fdy;
+          let ez = fdz;
           if (pvm > 1.5) {
             // Sideways component of the radial escape, relative to the
             // predator's heading.
@@ -1488,6 +2324,14 @@ export class ParticleSystem {
         // the moment it is not.
         if (fearI > 0.02 && threatNear) {
           const flee = P.fleeForce * fearI;
+          ax += fdx * flee;
+          ay += fdy * flee;
+          az += fdz * flee * 0.35;
+        }
+        // In flight past the threat band: keep bolting, weaker at low
+        // flight so the carry-out grows with the slider.
+        if (inFlight && !threatNear) {
+          const flee = P.fleeForce * fearI * (0.35 + 0.65 * flight);
           ax += (pdx / pd) * flee;
           ay += (pdy / pd) * flee;
           az += (pdz / pd) * flee * 0.35;
@@ -1497,17 +2341,28 @@ export class ParticleSystem {
       // Regroup urgency: still afraid but the threat is out of range —
       // swim straight back to the shoal (works with the pointer gone too).
       // Only particles still *outside* the shoal body are pulled home —
-      // once inside, the urge releases so the center doesn't clump.
-      if (fearI > 0.02 && !threatNear) {
-        const hx = cenX - x;
-        const hy = cenY - y;
-        const hz = this.centroidZ - z;
+      // once inside, the urge releases so the center doesn't clump. Waits
+      // until flight has burned off.
+      if (fearI > 0.02 && !threatNear && !inFlight) {
+        const hx = hcX - x;
+        const hy = hcY - y;
+        const hz = hcZ - z;
         const hd = Math.sqrt(hx * hx + hy * hy + hz * hz);
         if (hd > P.containRadius * 0.75) {
           const g = (P.regroup * 3.2 * Math.sqrt(fearI)) / hd;
           ax += hx * g;
           ay += hy * g;
           az += hz * g;
+        }
+        // Rally: frightened fish want the school's center, not its edge.
+        // No distance gate and no arrival damping, so they overshoot
+        // through the center; separation and crowd dim absorb the pile-up.
+        if (rally > 0.001 && hd > 0.5) {
+          const g = (P.regroup * 3.2 * Math.sqrt(fearI) * rally * 1.5) / hd;
+          ax += hx * g;
+          ay += hy * g;
+          az += hz * g;
+          rallyBoost = Math.max(rallyBoost, rally * Math.sqrt(fearI));
         }
       }
 
@@ -1535,12 +2390,14 @@ export class ParticleSystem {
         this.gaitClock[i] -= dt * gaitRate;
         if (this.gaitClock[i] <= 0) {
           this.gaitClock[i] = 0.35 + Math.random() * 1.1;
-          // Thrust along current motion, blended with the school heading.
+          // Thrust along current motion, blended with the fish's heading
+          // (the turn wave's, so fish the front hasn't reached don't get
+          // thrust onto the new heading early).
           const sp = Math.sqrt(vx * vx + vy * vy + vz * vz);
           const blend = m === FLOCK ? dirSpeed * 1.2 : 0.2;
-          let dxT = (sp > 0.2 ? vx / sp : headX) + headX * blend;
-          let dyT = (sp > 0.2 ? vy / sp : headY) + headY * blend;
-          let dzT = (sp > 0.2 ? vz / sp : headZ) + headZ * blend;
+          const dxT = (sp > 0.2 ? vx / sp : mhX) + mhX * blend;
+          const dyT = (sp > 0.2 ? vy / sp : mhY) + mhY * blend;
+          const dzT = (sp > 0.2 ? vz / sp : mhZ) + mhZ * blend;
           const dl = Math.sqrt(dxT * dxT + dyT * dyT + dzT * dzT) || 1;
           const imp =
             P.gait * spdF * (0.4 + dirSpeed * 0.9 + fearI * 0.7) *
@@ -1553,12 +2410,13 @@ export class ParticleSystem {
       }
 
       // ---- Integrate ----
-      vx = (vx + ax * dt) * dragF;
-      vy = (vy + ay * dt) * dragF;
-      vz = (vz + az * dt) * dragF;
+      vx = (vx + (ax + pkX) * dt) * dragF;
+      vy = (vy + (ay + pkY) * dt) * dragF;
+      vz = (vz + (az + pkZ) * dt) * dragF;
 
       const sp2 = vx * vx + vy * vy + vz * vz;
-      const cap = maxSpeed * (m === WANDER ? 0.85 : 1) + 0.4;
+      // maxSpeed also feeds the steering targets; only the hard cap rises.
+      const cap = maxSpeed * (1 + 0.8 * rallyBoost) * (m === WANDER ? 0.85 : 1) + 0.4;
       if (sp2 > cap * cap) {
         const f = cap / Math.sqrt(sp2);
         vx *= f; vy *= f; vz *= f;
@@ -1591,11 +2449,21 @@ export class ParticleSystem {
         this.refract[i] = P.refractory;
       }
 
+      fearSum += fearI;
       if (this.mode[i] === FLOCK) {
-        cSumX += pos[i3];
-        cSumY += pos[i3 + 1];
-        cSumZ += pos[i3 + 2];
+        const nx = pos[i3];
+        const ny = pos[i3 + 1];
+        const nz = pos[i3 + 2];
+        cSumX += nx;
+        cSumY += ny;
+        cSumZ += nz;
         cNum++;
+        // Spread about last frame's centroid (the GPU reduction's choice;
+        // the bias is negligible at swimming speed).
+        const sx = nx - cenX;
+        const sy = ny - cenY;
+        const sz = nz - cenZ;
+        spreadSum += sx * sx + sy * sy + sz * sz;
       }
     }
 
@@ -1604,9 +2472,13 @@ export class ParticleSystem {
       this.centroidX = cSumX / cNum;
       this.centroidY = cSumY / cNum;
       this.centroidZ = cSumZ / cNum;
+      this.rmsRadius = Math.sqrt(spreadSum / cNum);
     } else {
       this.centroidX = this.centroidY = this.centroidZ = 0;
     }
+    this.meanFear = fearSum / Math.max(1, n);
+
+    this.updateCrowdFade(dt);
 
     // Push cheap uniforms every frame so panel tweaks apply instantly.
     const u = this.material.uniforms;
@@ -1616,6 +2488,7 @@ export class ParticleSystem {
     u.uFlashBright.value = P.flashBrightness;
     u.uTwinkle.value = P.twinkle;
     u.uStretch.value = P.stretch;
+    u.uFlashSize.value = P.flashSize ?? 0.45;
     u.uMotionGlow.value = P.motionGlow;
 
     this.geometry.attributes.position.needsUpdate = true;

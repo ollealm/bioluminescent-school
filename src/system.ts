@@ -21,8 +21,8 @@ export interface SwarmSystem {
   /** Current director mood, for harnesses and debugging. */
   readonly moodName: string;
   /**
-   * Optional dev test control (GPU only): every mood the director knows,
-   * the one it is pinned to (null = the normal FSM), and the pin itself.
+   * Optional dev test control: every mood the director knows, the one it
+   * is pinned to (null = the normal FSM), and the pin itself.
    */
   readonly moodNames?: readonly string[];
   readonly forcedMood?: string | null;
@@ -32,15 +32,15 @@ export interface SwarmSystem {
   setPalette(name: PaletteName): void;
   setStyle(name: StyleName): void;
   /**
-   * Accent color override ("#rrggbb"), null = the palette's own. Optional:
-   * GPU only, absent on the CPU fallback (the panel feature-detects it).
+   * Accent color override ("#rrggbb"), null = the palette's own. Optional
+   * (the panel feature-detects it); both backends implement it.
    */
   readonly accentColor?: string | null;
   /** Override the palette's accent color; null restores the palette's own. */
   setAccent?(hex: string | null): void;
   /**
    * Base color override ("#rrggbb"), null = the palette's own gradient.
-   * Optional for the same reason as the accent: GPU only.
+   * Optional for the same reason as the accent.
    */
   readonly baseColor?: string | null;
   /** Derive the gradient from one color; null restores the palette's stops. */
@@ -92,15 +92,22 @@ export interface Snapshot {
   count: number;
   params: SwarmParams;
   /**
-   * Accent color override ("#rrggbb"), GPU only. getSnapshot() omits it
-   * while the palette's own accent shows; in applySnapshot() absent leaves
-   * the current override and null clears it. Additive, so the CPU reference
-   * and older snapshots stay valid at version 3.
+   * Accent color override ("#rrggbb"). getSnapshot() omits it while the
+   * palette's own accent shows; in applySnapshot() absent leaves the
+   * current override and null clears it. Additive, so the v3 reference and
+   * older snapshots stay valid at version 3.
    */
   accent?: string | null;
   /**
-   * Base color override ("#rrggbb"), GPU only: the school's gradient and
-   * flash hue are derived from it. Same omit/absent/null rules as accent.
+   * Base color override ("#rrggbb"): the school's gradient and flash hue
+   * are derived from it. Same omit/absent/null rules as accent.
    */
   base?: string | null;
+  /**
+   * Per-backend overrides for the CPU fallback, merged over `params` when a
+   * feel is selected on it (src/feel.ts). A feel tuned at 25k on the GPU
+   * reads too fast and too dim at a few thousand fish; this keeps one feel
+   * for both. `count` is the CPU fish count unless ?count= overrides it.
+   */
+  cpu?: Partial<SwarmParams> & { count?: number };
 }

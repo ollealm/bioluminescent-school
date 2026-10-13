@@ -9,8 +9,8 @@ import type { Snapshot, SwarmSystem } from "./system";
  * Backend ladder (HANDOFF-GPU.md §5 "degrading gracefully"):
  *   1. WebGPU on a real (non-software) adapter → the compute rewrite
  *      (src/gpu, no three.js).
- *   2. otherwise → the untouched CPU v3 reference at its original counts
- *      (src/cpu, lazy chunk that carries three.js).
+ *   2. otherwise → the CPU engine (v3 plus the fork's levers) at a few
+ *      thousand fish (src/cpu, lazy chunk that carries three.js).
  *
  * A lost GPU device re-mounts the whole backend: one more try on a fresh
  * adapter, then the CPU fallback, carrying the live snapshot across so the
@@ -49,7 +49,7 @@ const countOverride = Number(query.get("count")) || 0;
 // boot, and the school would stay pinned at the phone count forever.
 const coarsePointer = window.matchMedia("(pointer: coarse)").matches;
 const GPU_COUNT = coarsePointer ? 12000 : 25000;
-const CPU_COUNT = coarsePointer ? 1400 : 2600;
+const CPU_COUNT = coarsePointer ? 2200 : 4000;
 
 let live: Mounted | null = null;
 // The async harness/feel probes step the sim themselves. A depth, not a
@@ -131,7 +131,7 @@ async function mountBackend(
     count = countOverride || CPU_COUNT;
     application = createCpuApp(app, count);
     label = "cpu·three";
-    countMax = 6000;
+    countMax = 8000;
     Object.assign(window as object, { __gpuDevice: undefined });
   }
 

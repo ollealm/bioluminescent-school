@@ -3,8 +3,8 @@ import { ParticleSystem } from "./ParticleSystem";
 import type { SwarmSystem } from "../system";
 
 /**
- * CPU fallback backend — the untouched v3 reference sim wrapped in its own
- * three.js renderer/scene/camera. Lazy-loaded only when WebGPU is missing,
+ * CPU fallback backend — the v3 engine (carrying the GPU fork's levers)
+ * wrapped in its own three.js renderer/scene/camera. Lazy-loaded only when WebGPU is missing,
  * so three.js never reaches the GPU path's bundle.
  *
  * The ParticleSystem class already satisfies SwarmSystem (the interface was
