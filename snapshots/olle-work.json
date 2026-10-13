@@ -42,13 +42,13 @@
     "spontaneous": 0.08,
     "flashDecay": 2.4,
     "refractory": 2.2,
-    "flashBrightness": 0.4,
+    "flashBrightness": 0.2,
     "kick": 1.6,
     "inburst": 0.15,
     "particleSize": 1.5,
     "opacity": 0.85,
     "twinkle": 0.55,
-    "motionGlow": 0.5,
+    "motionGlow": 0.1,
     "stretch": 0.5,
     "collapse": 1.0,
     "shape": 0.9,
@@ -61,7 +61,8 @@
     "sheet": 0.4,
     "shiver": 1.0,
     "evade": 0.2,
-    "roamDepth": 0.1
+    "roamDepth": 0.1,
+    "flashSize": 0
   },
   "accent": "#8ff2ff"
 }
