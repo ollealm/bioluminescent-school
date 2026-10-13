@@ -599,8 +599,10 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
       case EV_STARTLE: {
         let dd = pos - E.center.xyz;
         let d = length(dd);
-        if (d <= 3.4) {
-          let f = 0.25 + 0.75 * (1.0 - d / 3.4);
+        // Ragged pocket (see the vanguard note).
+        let rs = 3.4 * (0.6 + 0.8 * rnd(i, salt + 7u));
+        if (d <= rs) {
+          let f = 0.25 + 0.75 * (1.0 - d / rs);
           fear = max(fear, f);
           glow = max(glow, f * 0.8);
           if (d < 1.8 && rnd(i, salt) < 0.5) {
@@ -610,12 +612,18 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
         }
       }
       case EV_VANGUARD: {
+        // A ragged pocket, not a disc: per-fish radius jitter and a soft
+        // falloff. A hard 3.5 u sphere darting and glowing together read
+        // as "a perfect circle turning" once the school became a sheet.
         let dd = pos - E.center.xyz;
-        if (dot(dd, dd) <= 3.5 * 3.5) {
-          let dart = 2.0 + rnd(i, salt) * 1.4;
+        let rv = 3.5 * (0.55 + 0.9 * rnd(i, salt + 7u));
+        let dv = length(dd);
+        if (dv <= rv) {
+          let w = 1.0 - dv / rv;
+          let dart = (2.0 + rnd(i, salt) * 1.4) * (0.4 + 0.6 * w);
           vel += vec3f(head.x * dart, head.y * dart, head.z * dart * 0.6);
           gaitClock = 0.0;
-          glow = max(glow, 0.5);
+          glow = max(glow, 0.3 * w);
         }
       }
       case EV_WANDER: {
@@ -709,7 +717,8 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
         // Resting agitation: a pocket takes fear and darts outward. Fear
         // contagion carries the shiver on; no ignition, energy or glow, so
         // movement comes before (and here without) light.
-        let r = E.misc.y * perception;
+        // Ragged pocket (see the vanguard note): jittered radius per fish.
+        let r = E.misc.y * perception * (0.6 + 0.8 * rnd(i, salt + 7u));
         let dd = pos - E.center.xyz;
         let d = length(dd);
         if (d < r) {
