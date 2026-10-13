@@ -29,7 +29,7 @@
     "mill": 0.4,
     "wanderRate": 0.8,
     "groupSize": 300,
-    "wanderPull": 1.6,
+    "wanderPull": 2.0,
     "returnPull": 2.8,
     "mouseRadius": 2.2,
     "repelForce": 90,
@@ -61,6 +61,6 @@
     "sheet": 0.4,
     "shiver": 1.0,
     "evade": 0.6,
-    "roamDepth": 0.4
+    "roamDepth": 0.1
   }
 }
