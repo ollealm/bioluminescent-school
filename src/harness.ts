@@ -2,7 +2,7 @@ import type { SwarmSystem } from "./system";
 
 /**
  * Headless behavior harness — the acceptance tests that define "alive",
- * ported from the CPU reference (HANDOFF-GPU.md §6) to run against either
+ * ported from the CPU reference (docs/HANDOFF-GPU.md §6) to run against either
  * backend. The GPU backend forces it async: state comes back via buffer
  * readbacks, so every probe samples through a small adapter instead of
  * peeking at private arrays.

@@ -3,7 +3,7 @@
 /**
  * The load-bearing constants that aren't user-facing sliders — the real spec
  * of the simulation, hoisted out of the code so a rewrite (see
- * HANDOFF-GPU.md) can diff against it instead of excavating literals.
+ * docs/HANDOFF-GPU.md) can diff against it instead of excavating literals.
  * Changing anything here changes behavior; each entry says what breaks.
  */
 export const TUNING = {
@@ -17,7 +17,7 @@ export const TUNING = {
   separationRatio: 0.66,
   /**
    * Cohesion "arrival" radius as a fraction of perception. Without arrival
-   * damping the swarm collapses into a ball (see HANDOFF-GPU.md §4.1).
+   * damping the swarm collapses into a ball (see docs/HANDOFF-GPU.md §4.1).
    */
   arriveRatio: 1.2,
   /** A flash is contagious while energy is above this. */
@@ -47,7 +47,7 @@ export const TUNING = {
 /**
  * Fork-specific constants for the GPU rewrite. The behavior constants above
  * are shared verbatim with the CPU reference; everything here exists only
- * because of the 20× density jump (HANDOFF-GPU.md §5) or the GPU execution
+ * because of the 20× density jump (docs/HANDOFF-GPU.md §5) or the GPU execution
  * model. Each entry says what breaks.
  */
 export const GPU_TUNING = {

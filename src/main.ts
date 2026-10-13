@@ -6,7 +6,7 @@ import type { Snapshot, SwarmSystem } from "./system";
 /**
  * Bootstrap: pick a backend, wire pointer/resize/loop around it.
  *
- * Backend ladder (HANDOFF-GPU.md §5 "degrading gracefully"):
+ * Backend ladder (docs/HANDOFF-GPU.md §5 "degrading gracefully"):
  *   1. WebGPU on a real (non-software) adapter → the compute rewrite
  *      (src/gpu, no three.js).
  *   2. otherwise → the CPU engine (v3 plus the fork's levers) at a few

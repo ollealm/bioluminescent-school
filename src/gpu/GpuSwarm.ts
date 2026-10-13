@@ -90,7 +90,7 @@ export interface GpuStateSnapshot {
 
 /**
  * The GPU rewrite of the living school. Same four behavior layers as the
- * CPU reference; the split follows HANDOFF-GPU.md §2.2: the swarm director
+ * CPU reference; the split follows docs/HANDOFF-GPU.md §2.2: the swarm director
  * (a handful of scalars) stays host-side, every per-particle quantity lives
  * in GPU storage buffers, and host→swarm interventions travel through a
  * small event queue resolved on-GPU (no readback in the loop; the centroid
