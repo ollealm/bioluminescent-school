@@ -367,6 +367,12 @@ export interface SwarmParams {
   containRadius: number;
   /** How far the swarm's roaming attractor travels — the shoal cruises. */
   roam: number;
+  /**
+   * How much of that roaming (and of the heading) happens in depth, toward
+   * and away from the camera. 1 = v3 (z amplitude 0.45× roam, heading
+   * pitch up to ±0.3); 0 = the school stays in the camera plane. GPU only.
+   */
+  roamDepth: number;
   /** Rotating-vortex (fish mill) force around the swarm's own center. */
   mill: number;
 
@@ -477,6 +483,7 @@ export const DEFAULT_PARAMS: SwarmParams = {
   breathe: 0.06,
   containRadius: 9,
   roam: 0.45,
+  roamDepth: 1.0,
   mill: 0.2,
 
   wanderRate: 0.45,

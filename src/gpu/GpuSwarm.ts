@@ -970,8 +970,11 @@ export class GpuSwarm implements SwarmSystem {
     const s = Math.sin(ang);
     const hx = this.headX * c - this.headY * s;
     const hy = this.headX * s + this.headY * c;
-    let hz = this.headZ + (Math.random() - 0.5) * 0.4;
-    hz = Math.max(-0.3, Math.min(0.3, hz));
+    // Pitch is scaled by roamDepth: the owner found the school wandering
+    // too far toward/away from the camera, and the slider now owns that.
+    const zd = Math.max(0, Math.min(1, this.params.roamDepth ?? 1));
+    let hz = this.headZ + (Math.random() - 0.5) * 0.4 * zd;
+    hz = Math.max(-0.3 * zd, Math.min(0.3 * zd, hz));
     const l = Math.sqrt(hx * hx + hy * hy + hz * hz) || 1;
     this.headX = hx / l;
     this.headY = hy / l;
@@ -1146,7 +1149,8 @@ export class GpuSwarm implements SwarmSystem {
     const targetX = (Math.sin(t * 0.13) + 0.5 * Math.sin(t * 0.23 + 2.1)) * roamR;
     const targetY =
       (Math.sin(t * 0.107 + 1.3) + 0.5 * Math.sin(t * 0.19)) * roamR * 0.8;
-    const targetZ = Math.sin(t * 0.147 + 4.2) * roamR * 0.45;
+    const targetZ = Math.sin(t * 0.147 + 4.2) * roamR * 0.45
+      * Math.max(0, Math.min(1, P.roamDepth ?? 1));
 
     // Evade: the school dodges a parked predator as a body. Its herd
     // center and roam target shift away from the pointer and the heading

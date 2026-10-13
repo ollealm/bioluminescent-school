@@ -43,6 +43,7 @@ export const MOTION_KEYS: (keyof SwarmParams)[] = [
   "breathe",
   "containRadius",
   "roam",
+  "roamDepth",
   "mill",
   "wanderRate",
   "groupSize",

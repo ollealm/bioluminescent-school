@@ -67,7 +67,8 @@ const GROUPS: Group[] = [
     sliders: [
       { key: "timeScale", label: "Time scale", min: 0.1, max: 2, step: 0.05, impact: 3, hint: "Global simulation speed — slows or hurries everything" },
       { key: "flowStrength", label: "Flow strength", min: 0, max: 4, step: 0.05, impact: 2, hint: "Force of the ambient water current" },
-      { key: "roam", label: "Roam", min: 0, max: 1.5, step: 0.05, impact: 2, hint: "How far the school's home region wanders around the frame" },
+      { key: "roam", label: "Roam", min: 0, max: 1.5, step: 0.05, impact: 2, hint: "How far the school's home region wanders around the frame (sideways and up/down)" },
+      { key: "roamDepth", label: "Depth roam", min: 0, max: 1, step: 0.05, impact: 2, hint: "How much of the roaming and heading goes toward/away from the camera - 0 keeps the school in the view plane" },
       { key: "mill", label: "Mill", min: 0, max: 2, step: 0.05, impact: 2, hint: "Standing vortex — rotation around the school's own center" },
       { key: "containRadius", label: "Cloud size", min: 5, max: 16, step: 0.5, impact: 2, hint: "Resting size of the school" },
       { key: "flowScale", label: "Flow scale", min: 0.02, max: 0.25, step: 0.005, impact: 1, hint: "Eddy size of the current — lower = broader swirls" },
@@ -768,7 +769,7 @@ export class DevPanel {
 }
 
 /** Params only the GPU kernel implements (added after the v3 port). */
-const GPU_ONLY_KEYS = new Set<string>(["collapse", "shape", "herd", "shiver", "sheet", "bite", "flight", "rally", "evade", "crowdDim", "accentShare"]);
+const GPU_ONLY_KEYS = new Set<string>(["roamDepth", "collapse", "shape", "herd", "shiver", "sheet", "bite", "flight", "rally", "evade", "crowdDim", "accentShare"]);
 
 function el(tag: string, cls: string, text?: string): HTMLElement {
   const node = document.createElement(tag);
