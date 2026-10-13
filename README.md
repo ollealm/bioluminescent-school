@@ -1,4 +1,4 @@
-# bioluminescent swarm
+# bioluminescent school
 
 A living school of 25,000 bioluminescent, fish-like particles, simulated
 entirely in WebGPU compute and drawn as in-hue light: it travels, turns,
