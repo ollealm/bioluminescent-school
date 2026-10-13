@@ -50,8 +50,8 @@ export interface SwarmSystem {
   /** Recreate all particle state for a new count. Params are untouched. */
   rebuild(count: number): void;
   /**
-   * Optional: change the count without resetting the school (the GPU
-   * backend thins/revives in place). Callers that can't tolerate a full
+   * Optional: change the count without resetting the school (both
+   * backends thin and revive in place). Callers that can't tolerate a full
    * respawn (count slider, frame-time governor) prefer this when present;
    * the harness always uses rebuild for a clean field.
    */

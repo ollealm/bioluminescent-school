@@ -58,6 +58,7 @@ src/
   system.ts        SwarmSystem: the interface both backends implement
   feel.ts          named feels (snapshots/*.json), keys 1–9, ?feel=
   main.ts          boot: WebGPU detect → gpu/ ; else lazy-load cpu/ (three.js chunk)
+  governor.ts      adaptive count governor (GPU and CPU meters)
   harness.ts       acceptance probes (async, backend-agnostic)
   review.ts        filmstrip contact sheets for visual review
   DevPanel.ts      the dev panel
@@ -68,6 +69,7 @@ src/
     renderer.ts    HDR pipeline, canvas, brightness budget
     camera.ts      fixed camera + pointer unprojection
   cpu/             the v3 engine carrying every GPU lever, + a three.js adapter
+                   with the same HDR target and hue-preserving resolve
 ```
 
 **Split.** Whole-school state stays on the host, as HANDOFF §2.2
@@ -100,7 +102,8 @@ position on the GPU, so scheduling never waits on a readback.
 so a display the OS caps at 30 Hz sheds nothing. A step must lower GPU
 time or shedding stops, and a down/up/down within two minutes holds the
 lower count for the session; a single stalled frame never counts.
-No WebGPU, or a software adapter, boots the CPU engine. A lost GPU device
+No WebGPU, or a software adapter, boots the CPU engine, which the same
+governor runs on its own update time (floor 1,000). A lost GPU device
 re-mounts the backend once with the current state carried over, then
 falls back to the CPU.
 

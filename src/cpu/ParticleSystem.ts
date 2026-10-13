@@ -165,6 +165,16 @@ function sortIntoCells(
   return tn;
 }
 
+/**
+ * Set a THREE.Color to a "#rrggbb" as raw sRGB values, as the GPU backend
+ * and the vertex colors (hexToRgb) take it. A plain set() converts sRGB to
+ * linear under ColorManagement, which made the CPU's flash hue darker and
+ * more saturated than the GPU's; declaring the input linear skips that.
+ */
+function setRaw(color: THREE.Color, hex: string): THREE.Color {
+  return color.setStyle(hex, THREE.LinearSRGBColorSpace);
+}
+
 function detectMobile(): boolean {
   if (typeof window === "undefined") return false;
   return (
@@ -178,6 +188,11 @@ export interface ParticleSystemOptions {
   camera?: THREE.PerspectiveCamera;
   /** Particle count. Defaults to 2600 desktop / 1400 mobile. */
   count?: number;
+  /**
+   * Slots to allocate up front (at least the count), so resize() up to
+   * this many thins and revives the living school instead of respawning it.
+   */
+  capacity?: number;
   /** Starting presets per category, e.g. { motion: "shoal", look: "reef" }. */
   presets?: Partial<Record<PresetCategory, string>>;
 }
@@ -224,6 +239,11 @@ export class ParticleSystem implements SwarmSystem {
   private scene: THREE.Scene;
   private camera?: THREE.PerspectiveCamera;
   private count = 0;
+  /** Allocated slots; fish in [count, capacity) are dormant. */
+  private capacity = 0;
+  private minCapacity: number;
+  /** Multiplies the Opacity slider; see setOpacityScale(). */
+  private opacityScale = 1;
 
   private geometry!: THREE.BufferGeometry;
   private material: THREE.ShaderMaterial;
@@ -398,6 +418,7 @@ export class ParticleSystem implements SwarmSystem {
 
     this.material = this.createMaterial();
     this.setStyle(this.styleName);
+    this.minCapacity = options.capacity ?? 0;
     this.rebuild(options.count ?? (detectMobile() ? 1400 : 2600));
 
     if (options.presets) {
@@ -512,7 +533,7 @@ export class ParticleSystem implements SwarmSystem {
   }
 
   private syncFlashColor(): void {
-    (this.material.uniforms.uFlashColor.value as THREE.Color).set(this.flashColor);
+    setRaw(this.material.uniforms.uFlashColor.value as THREE.Color, this.flashColor);
   }
 
   setStyle(name: StyleName): void {
@@ -698,7 +719,7 @@ export class ParticleSystem implements SwarmSystem {
         uStyle: { value: 0 },
         uOpacity: { value: this.params.opacity },
         uFlashBright: { value: this.params.flashBrightness },
-        uFlashColor: { value: new THREE.Color(PALETTES[this.paletteName].flash) },
+        uFlashColor: { value: setRaw(new THREE.Color(), this.flashColor) },
       },
       vertexShader,
       fragmentShader,
@@ -710,52 +731,58 @@ export class ParticleSystem implements SwarmSystem {
     });
   }
 
-  /** Recreate all buffers for a new particle count. Params are untouched. */
+  /**
+   * Respawn the school at a new count (the harness relies on this for a
+   * clean field). Params are untouched. Buffers are sized to the capacity,
+   * so later resizes within it keep the school.
+   */
   rebuild(count: number): void {
     count = Math.max(64, Math.floor(count));
+    const cap = Math.max(count, this.minCapacity);
     if (this.points) {
       this.scene.remove(this.points);
       this.geometry.dispose();
     }
 
     this.count = count;
-    const positions = new Float32Array(count * 3);
-    const colors = new Float32Array(count * 3);
-    const sizes = new Float32Array(count);
-    const energies = new Float32Array(count);
-    const glows = new Float32Array(count);
-    const seeds = new Float32Array(count);
-    const fades = new Float32Array(count).fill(1);
+    this.capacity = cap;
+    const positions = new Float32Array(cap * 3);
+    const colors = new Float32Array(cap * 3);
+    const sizes = new Float32Array(cap);
+    const energies = new Float32Array(cap);
+    const glows = new Float32Array(cap);
+    const seeds = new Float32Array(cap);
+    const fades = new Float32Array(cap).fill(1);
 
-    this.vel = new Float32Array(count * 3);
-    this.refract = new Float32Array(count);
-    this.fired = new Uint8Array(count);
-    this.mode = new Uint8Array(count);
-    this.modeTimer = new Float32Array(count);
-    this.wanderDir = new Float32Array(count * 3);
-    this.fear = new Float32Array(count);
-    this.pulse = new Float32Array(count * 3);
-    this.pulseSign = new Float32Array(count);
-    this.posPrev = new Float32Array(count * 3);
-    this.velPrev = new Float32Array(count * 3);
-    this.energyPrev = new Float32Array(count);
-    this.fearPrev = new Float32Array(count);
-    this.pulsePrev = new Float32Array(count * 3);
-    this.pulseSignPrev = new Float32Array(count);
-    this.speedFactor = new Float32Array(count);
-    this.social = new Float32Array(count);
-    this.gaitClock = new Float32Array(count);
-    this.gridEntries = new Int32Array(count);
-    this.cellOf = new Int32Array(count);
-    this.fineEntries = new Int32Array(count);
-    this.fineCellOf = new Int32Array(count);
-    // New touched lists for the new count: the counts they'd clear go now.
+    this.vel = new Float32Array(cap * 3);
+    this.refract = new Float32Array(cap);
+    this.fired = new Uint8Array(cap);
+    this.mode = new Uint8Array(cap);
+    this.modeTimer = new Float32Array(cap);
+    this.wanderDir = new Float32Array(cap * 3);
+    this.fear = new Float32Array(cap);
+    this.pulse = new Float32Array(cap * 3);
+    this.pulseSign = new Float32Array(cap);
+    this.posPrev = new Float32Array(cap * 3);
+    this.velPrev = new Float32Array(cap * 3);
+    this.energyPrev = new Float32Array(cap);
+    this.fearPrev = new Float32Array(cap);
+    this.pulsePrev = new Float32Array(cap * 3);
+    this.pulseSignPrev = new Float32Array(cap);
+    this.speedFactor = new Float32Array(cap);
+    this.social = new Float32Array(cap);
+    this.gaitClock = new Float32Array(cap);
+    this.gridEntries = new Int32Array(cap);
+    this.cellOf = new Int32Array(cap);
+    this.fineEntries = new Int32Array(cap);
+    this.fineCellOf = new Int32Array(cap);
+    // New touched lists for the new capacity: the counts they'd clear go now.
     this.gridCount.fill(0);
     this.fineCount.fill(0);
     this.crowdCount.fill(0);
-    this.gridTouched = new Int32Array(count);
-    this.fineTouched = new Int32Array(count);
-    this.crowdTouched = new Int32Array(count);
+    this.gridTouched = new Int32Array(cap);
+    this.fineTouched = new Int32Array(cap);
+    this.crowdTouched = new Int32Array(cap);
     this.gridTouchedN = this.fineTouchedN = this.crowdTouchedN = 0;
     this.seeds = seeds;
     this.fade = fades;
@@ -766,7 +793,9 @@ export class ParticleSystem implements SwarmSystem {
     this.meanFear = 0;
 
     const R = this.params.containRadius;
-    for (let i = 0; i < count; i++) {
+    // Dormant slots spawn too: their statics (size, seed, personality,
+    // color) are what resize() wakes them with.
+    for (let i = 0; i < cap; i++) {
       // Spawn in a soft sphere; a few in an outer shell for loose whiskers.
       const shell = Math.random() < 0.15;
       const r = shell
@@ -812,9 +841,78 @@ export class ParticleSystem implements SwarmSystem {
     this.colorSeed = (Math.random() * 2 ** 32) >>> 0;
     this.applyPaletteColors();
 
+    this.geometry.setDrawRange(0, count);
     this.points = new THREE.Points(this.geometry, this.material);
     this.points.frustumCulled = false;
     this.scene.add(this.points);
+  }
+
+  /**
+   * Change the count without resetting the school, as GpuSwarm.resize does:
+   * shrinking puts the tail to sleep (the sim, the grids and the draw range
+   * all stop at count), growing wakes dormant slots near the centroid. Only
+   * a count past the allocated capacity respawns.
+   */
+  resize(count: number): void {
+    count = Math.max(64, Math.floor(count));
+    if (count > this.capacity) {
+      this.rebuild(count);
+      return;
+    }
+    if (count > this.count) this.reviveRange(this.count, count);
+    this.count = count;
+    this.geometry.setDrawRange(0, count);
+  }
+
+  /**
+   * Wake dormant slots [from, to) in a soft ball around the school's
+   * center, at rest and unlit; their statics were spawned with the
+   * capacity. The previous-frame copies get the same state, so no
+   * neighbor reads a woken fish where it slept.
+   */
+  private reviveRange(from: number, to: number): void {
+    const R = this.params.containRadius;
+    for (let i = from; i < to; i++) {
+      const r = R * 0.7 * Math.cbrt(Math.random());
+      const theta = Math.random() * Math.PI * 2;
+      const cosPhi = Math.random() * 2 - 1;
+      const sinPhi = Math.sqrt(1 - cosPhi * cosPhi);
+      const i3 = i * 3;
+      this.pos[i3] = this.centroidX + r * sinPhi * Math.cos(theta);
+      this.pos[i3 + 1] = this.centroidY + r * sinPhi * Math.sin(theta);
+      this.pos[i3 + 2] = this.centroidZ + r * cosPhi;
+      this.vel[i3] = (Math.random() - 0.5) * 0.6;
+      this.vel[i3 + 1] = (Math.random() - 0.5) * 0.6;
+      this.vel[i3 + 2] = (Math.random() - 0.5) * 0.6;
+      this.wanderDir[i3] = this.wanderDir[i3 + 1] = this.wanderDir[i3 + 2] = 0;
+      this.pulse[i3] = this.pulse[i3 + 1] = this.pulse[i3 + 2] = 0;
+      this.pulseSign[i] = 0;
+      this.energy[i] = 0;
+      this.glow[i] = 0;
+      this.fear[i] = 0;
+      this.refract[i] = 0;
+      this.fired[i] = 0;
+      this.mode[i] = FLOCK;
+      this.modeTimer[i] = 0;
+      this.fade[i] = 1;
+      this.gaitClock[i] = Math.random() * 1.5;
+    }
+    const a3 = from * 3;
+    const b3 = to * 3;
+    this.posPrev.set(this.pos.subarray(a3, b3), a3);
+    this.velPrev.set(this.vel.subarray(a3, b3), a3);
+    this.pulsePrev.set(this.pulse.subarray(a3, b3), a3);
+    this.energyPrev.fill(0, from, to);
+    this.fearPrev.fill(0, from, to);
+    this.pulseSignPrev.fill(0, from, to);
+  }
+
+  /**
+   * Brightness for a school the count governor has thinned: multiplies the
+   * Opacity slider (1 = literal), so fewer fish keep the perceived mass.
+   */
+  setOpacityScale(k: number): void {
+    this.opacityScale = k;
   }
 
   /**
@@ -833,7 +931,8 @@ export class ParticleSystem implements SwarmSystem {
     const rand = mulberry32(this.colorSeed);
     const colors = this.geometry.attributes.color.array as Float32Array;
 
-    for (let i = 0; i < this.count; i++) {
+    // The whole capacity, so a woken fish already has its color.
+    for (let i = 0; i < this.capacity; i++) {
       const pick = rand();
       // Sample the gradient, biased toward the brighter end.
       const t = Math.pow(rand(), 0.8) * (stops.length - 1);
@@ -1556,7 +1655,10 @@ export class ParticleSystem implements SwarmSystem {
     const attr = this.geometry.attributes.aFade as THREE.BufferAttribute;
     if (!(dim > 0)) {
       if (this.crowdOn) {
+        // The whole buffer, dormant slots too: with crowd dim off nothing
+        // re-uploads a fish's fade when it wakes.
         fade.fill(1);
+        attr.clearUpdateRanges();
         attr.needsUpdate = true;
         this.crowdOn = false;
         this.nRef = -1;
@@ -1628,7 +1730,7 @@ export class ParticleSystem implements SwarmSystem {
     for (let i = 0; i < n; i++) {
       fade[i] = Math.pow(Math.min(1, nRef / Math.max(fade[i], 1)), k);
     }
-    attr.needsUpdate = true;
+    this.markLive(attr);
   }
 
   // ------------------------------------------------------------------
@@ -1851,12 +1953,12 @@ export class ParticleSystem implements SwarmSystem {
     this.buildGrid(invCell);
     // Snapshot before this frame's ignitions, so a seed lights its
     // neighbors next frame, as on the GPU.
-    this.posPrev.set(pos);
-    this.velPrev.set(vel);
-    this.energyPrev.set(energy);
-    this.fearPrev.set(fear);
-    this.pulsePrev.set(this.pulse);
-    this.pulseSignPrev.set(this.pulseSign);
+    this.posPrev.set(pos.subarray(0, n * 3));
+    this.velPrev.set(vel.subarray(0, n * 3));
+    this.energyPrev.set(energy.subarray(0, n));
+    this.fearPrev.set(fear.subarray(0, n));
+    this.pulsePrev.set(this.pulse.subarray(0, n * 3));
+    this.pulseSignPrev.set(this.pulseSign.subarray(0, n));
     const posPrev = this.posPrev;
     const velPrev = this.velPrev;
     const energyPrev = this.energyPrev;
@@ -2649,17 +2751,29 @@ export class ParticleSystem implements SwarmSystem {
     const u = this.material.uniforms;
     u.uTime.value = t;
     u.uSize.value = P.particleSize;
-    u.uOpacity.value = P.opacity;
+    u.uOpacity.value = P.opacity * this.opacityScale;
     u.uFlashBright.value = P.flashBrightness;
     u.uTwinkle.value = P.twinkle;
     u.uStretch.value = P.stretch;
     u.uFlashSize.value = P.flashSize ?? 0.45;
     u.uMotionGlow.value = P.motionGlow;
 
-    this.geometry.attributes.position.needsUpdate = true;
-    this.geometry.attributes.aEnergy.needsUpdate = true;
-    this.geometry.attributes.aGlow.needsUpdate = true;
-    this.geometry.attributes.aVel.needsUpdate = true;
+    const attrs = this.geometry.attributes;
+    this.markLive(attrs.position as THREE.BufferAttribute);
+    this.markLive(attrs.aEnergy as THREE.BufferAttribute);
+    this.markLive(attrs.aGlow as THREE.BufferAttribute);
+    this.markLive(attrs.aVel as THREE.BufferAttribute);
+  }
+
+  /**
+   * Queue an upload of the live fish only: the dormant tail isn't drawn.
+   * Cleared first, because the harness steps many frames per render and
+   * three.js keeps every queued range until the next upload.
+   */
+  private markLive(attr: THREE.BufferAttribute): void {
+    attr.clearUpdateRanges();
+    attr.addUpdateRange(0, this.count * attr.itemSize);
+    attr.needsUpdate = true;
   }
 
   setPixelRatio(dpr: number): void {

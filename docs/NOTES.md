@@ -366,8 +366,10 @@ alignment in every mode, strike, pointer depth and collision pushout are
 always on); the untouched v3 lives in its own repo.
 
 A feel's optional `cpu` block (`count` plus param overrides) is merged over
-its params on the CPU backend, because the CPU has no hue-preserving
-tonemap: at GPU opacity the sheet piled up to white. Measured (CPU 4,000 vs
+its params on the CPU backend: a few thousand fish need their own speed,
+size and brightness. It began as the workaround for a CPU path with no
+hue-preserving tonemap, where the sheet piled up to white at GPU opacity
+(the tonemap came later, below). Measured (CPU 4,000 vs
 GPU 25k): elongation 6.3 vs 4.8, breathing ±30% vs ±59%, coherence
 0.29…0.97 vs 0.22…0.95; aimed probes: fountain −0.62, a park clears 476 → 3
 fish in 1.5 s.
@@ -399,6 +401,62 @@ olle-work: elongation 10.7 vs 10.8, breathing ±53% vs ±54%, coherence
 4.6 s). Also: the grids sort only occupied cells (grid build 0.47 →
 0.05 ms), the fine grid uses the GPU's screen-wide extent, and MSAA is off
 (point sprites render pixel-identical without it, at a third of the cost).
+
+**The CPU governs its count and tonemaps like the GPU** (2026-10-13). The
+fallback ran at a fixed count on exactly the weakest devices: under
+Chrome's 4× CPU throttle, 2,500 fish held ~42 fps without adapting. The
+governor (`src/governor.ts`) is now one state machine with a meter per
+backend: the GPU's `onSubmittedWorkDone` probe, or on the CPU `update()`
+timed inline. The rest is shared: the 5 s warmup, the stall guard, "late"
+(over 1.5 display periods and under 45 fps), the step down that must lower
+the meter's median by a quarter of the cut, the down/up/down hold, and
+the slider as the new target. The CPU sheds from 1,000 fish up, in steps
+of −22% / +15% rounded to 100. It counts as bound when `update()` takes
+over 0.6 of a 60 Hz period, and has headroom under 0.4. Those shares sit
+below the GPU's 0.8 / 0.5 because `update()` is only part of the main
+thread's frame, and a +15% step has to land short of bound. Both meters are
+now judged against a 60 Hz period on any display. "Late" already meant
+under 45 fps on a 120 Hz screen, and against its 8.3 ms period headroom was
+out of reach: in headless Chrome at 120 Hz, a school shed under the
+throttle held 2,000 at 120 fps for good, and a mocked GPU spike stayed at
+15,000 (now back to 25,000). At 60 Hz the GPU governor makes the same
+decisions as before; a mocked-clock replay of the old and new code agrees
+step for step in five scenarios. `ParticleSystem` allocates the slider's
+8,000 slots once. Shrinking puts the tail to sleep: the sim, the grids,
+the previous-frame copies, the uploads and the draw range all stop at the
+count. Growing wakes dormant slots in a 0.7·R ball at the centroid, with
+their previous-frame copies set, as in `GpuSwarm.reviveRange`. So the
+count slider no longer respawns the CPU school either, and at
+capacity = count the sim is bit-identical to before. Shed fish are
+compensated with the GPU's density law, relative to the governed target:
+opacity × (target/governed)^0.35, so a feel's `cpu` block stays literal at
+its own count. In the replay (vsync-quantized frames) a 4× load sheds
+2,500 → 1,200 in 11 s and grows back once it lifts; a busy page, stalls,
+or `update()` cost that doesn't scale with the count shed nothing (the
+last blocks after one step). One corner is shared with the GPU: under a
+30 Hz display cap with a sim over 10 ms, frames are late and the meter
+bound, so it sheds (2,200 → 1,300) without gaining a frame.
+
+The points now accumulate into a half-float target with the same
+`SRC_ALPHA, ONE` blend, then resolve through the GPU's `fsTonemap`: the
+0.72 knee on the max channel, hue ratios kept, alpha clamped, the same
+premultiplied composite onto the page as before. Without
+`EXT_color_buffer_float`/`_half_float` the points draw straight to the
+canvas, as before. On frozen cascade frames at 2880×1800, near-white
+pixels (min channel ≥ 0.9) fell from up to 0.12% of the frame to
+≤ 0.005%, and hot pixels keep the flash hue's saturation (0.21 vs 0.06
+direct; the flash, #bdf2de, is 0.22). The 8-bit canvas also dropped
+sprite tails below one level, which the half-float target keeps. The
+resolve costs 0.28 ms per frame at 2880×1800 on M2 Max (timer query:
+0.17 → 0.45 ms). Also fixed: the flash uniform went through
+`THREE.Color`, whose `set()` linearizes sRGB, so CPU flashes were darker
+and more saturated than the GPU's (#bdf2de drawn as 0.51/0.89/0.73
+instead of 0.74/0.95/0.87). The palette stops, accent and base were
+already raw. olle-work's `cpu` block keeps opacity 0.6. In 12-frame stirs
+with two cascades (CPU 2,500 vs GPU 25k), near-white stayed ≤ 0.005% at
+0.6 and at 0.5 (before the tonemap: 0.05–0.10%). Hot pixels (max channel
+≥ 0.92) ran 0.08–0.14% at 0.6 against the GPU's 0.05%, but in the flash's
+own hue. 0.6 reads closest to the GPU's brightness; 0.5 read faint.
 
 ## 4. Measurements
 
