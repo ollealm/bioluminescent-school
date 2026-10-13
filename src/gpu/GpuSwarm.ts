@@ -214,6 +214,14 @@ export class GpuSwarm implements SwarmSystem {
   private headX = 1;
   private headY = 0;
   private headZ = 0;
+  // Turn wave (GPU-only): fish outside a sphere growing from the vanguard
+  // fish keep the pre-turn heading, so the turn spreads from a small group.
+  private turnOldX = 1;
+  private turnOldY = 0;
+  private turnOldZ = 0;
+  private turnIndex = 0;
+  private turnRadius = 0;
+  private turnActive = 0;
   private startleClock = 25;
   /** Shiver (GPU-only): countdown to the next resting agitation wave. */
   private shiverClock = 8;
@@ -876,6 +884,8 @@ export class GpuSwarm implements SwarmSystem {
     const tempo = Math.max(0.25, P.tempo);
     const prev = this.mood;
     this.mood = mood;
+    // Any transition ends a running turn wave; M_TURN re-arms it below.
+    this.turnActive = 0;
     // Personal space is the reference's everywhere except the contraction
     // and the turn that releases it; the herd gain idles outside contract.
     this.tgtSep = 1;
@@ -891,25 +901,37 @@ export class GpuSwarm implements SwarmSystem {
         this.tgtSpeed = 0.5 + Math.random() * 0.35;
         if (Math.random() < 0.45) this.pickNewHeading(10, 40);
         break;
-      case M_TURN:
-        this.moodTimer = 1.2 + Math.random() * 0.8;
+      case M_TURN: {
+        // Long enough for the wave (GPU_TUNING.turnWaveSpeed) to cross the
+        // school: the owner found the old 1.2-2 s turns too short.
+        this.moodTimer = (2.6 + Math.random() * 1.4) / tempo;
         this.tgtAlign = 1.6;
         this.tgtCoh = 0.95;
         this.tgtMill = 0;
-        this.tgtDrive = 1.5;
+        // Softer than the old 1.5: the will no longer has to swing the
+        // whole school at once, alignment carries the wave.
+        this.tgtDrive = 1.2;
         this.tgtSpeed = 0.95;
         // Released from a contraction, the school pops outward as it darts
         // onto the new heading.
         if (prev === M_CONTRACT) this.tgtSep = 1.25;
+        this.turnOldX = this.headX;
+        this.turnOldY = this.headY;
+        this.turnOldZ = this.headZ;
         this.pickNewHeading(70, 155);
         // Seed the turn through a vanguard cluster: one pocket darts onto
-        // the new heading and alignment propagates it as a visible wave.
+        // the new heading and the wave front grows from its center fish.
+        const idx = (Math.random() * this.count) | 0;
+        this.turnIndex = idx;
+        this.turnRadius = 0;
+        this.turnActive = 1;
         this.pending.push({
           kind: EV_VANGUARD,
-          index: (Math.random() * this.count) | 0,
+          index: idx,
           needsResolve: true,
         });
         break;
+      }
       case M_MILL:
         this.moodTimer = (6 + Math.random() * 7) / tempo;
         this.tgtAlign = 1.25;
@@ -1035,6 +1057,7 @@ export class GpuSwarm implements SwarmSystem {
       }
     }
 
+    if (this.mood === M_TURN) this.turnRadius += GPU_TUNING.turnWaveSpeed * dt;
     this.moodTimer -= dt;
     if (this.moodTimer <= 0) {
       // Pinned: re-enter so turn keeps turning and contract keeps contracting.
@@ -1352,6 +1375,12 @@ export class GpuSwarm implements SwarmSystem {
     U[73] = cen.y + this.evadeY;
     U[74] = cen.z + this.evadeZ;
     U[75] = P.sheet ?? 0;
+    U[80] = this.turnOldX;
+    U[81] = this.turnOldY;
+    U[82] = this.turnOldZ;
+    U[83] = this.turnRadius;
+    U[84] = this.turnIndex;
+    U[85] = this.turnActive;
 
     // ---- Pack events ----
     const batch = this.pending.splice(0, MAX_EVENTS);

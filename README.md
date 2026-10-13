@@ -139,6 +139,18 @@ comparing full parameter sets live:
   ±59%, coherence swinging 0.22…0.95; a 3 s stir blows the body into a
   turbulent wave, implodes it into a tight core at 1.4–2.8 s, reformed by
   4.2 s.
+- **The turn is a wave** (round eight, owner: "turn disrupts the flow;
+  the vanguard pocket is too noticeable and isn't leading; turns are too
+  short"). Before, a turn flipped the shared heading for all 25k fish at
+  once (drive 1.5) and the vanguard pocket was a lit flash on top. Now the
+  director remembers the old heading, the pocket (ragged, no glow, a
+  modest dart) takes the new one, and a wavefront grows from the vanguard
+  fish at `turnWaveSpeed` 3.2 u/s: fish outside it keep the old heading
+  in the drive and in the gait (the gait was a leak that turned the wave
+  back into a whole-school rotation), fish inside follow the new one, and
+  alignment carries the bend ahead of the front. Turns last 2.6-4 s / tempo
+  at drive 1.2. Mood pin buttons in the panel (auto + each mood) exist to
+  test moods in isolation.
 - **Visual review** - `await __sweep()` (standard predator pass: the cursor
   enters from the left, crosses into the school, parks, leaves) and
   `await __filmstrip({ frames, intervalMs, path, click })` return one

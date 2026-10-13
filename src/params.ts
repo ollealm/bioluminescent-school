@@ -218,6 +218,14 @@ export const GPU_TUNING = {
    * neighbors) and the sampled max-fear weaken proportionally.
    */
   sampleCandidates: 96,
+  /**
+   * Speed (u/s) of the turn wave: fish adopt the new heading once the front,
+   * a sphere growing from the vanguard fish, reaches them; outside it they
+   * keep the old one and alignment carries the turn ahead of the front. A
+   * school of RMS radius ~4-5 u is crossed in ~2.5 s, inside the turn's
+   * (2.6-4 s)/tempo duration, so the whole school turns before cruise.
+   */
+  turnWaveSpeed: 3.2,
   /** Compute workgroup size for the per-particle kernels. */
   workgroupSize: 64,
   /** Max host→GPU events applied per frame (burst/startle/vanguard/...). */

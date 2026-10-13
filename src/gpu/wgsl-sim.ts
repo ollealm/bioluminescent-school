@@ -33,10 +33,15 @@ import { GPU_TUNING, TUNING } from "../params";
  *   U[18] evadeCenter.xyz, sheet        (centroid shifted off the predator,
  *                                        read only at evade > 0; sheet 0 =
  *                                        v3 kernel)
+ *   U[19] unused
+ *   U[20] turnOldHead.xyz, turnRadius   (turn wave: fish beyond turnRadius
+ *   U[21] turnIndex, turnActive, -, -    of the vanguard fish keep the old
+ *                                        heading; turnActive 0 = everyone on
+ *                                        head)
  */
 
-/** Uniform array length in vec4s (80 floats). Shared with GpuSwarm.ts. */
-export const U_VEC4S = 20;
+/** Uniform array length in vec4s (88 floats). Shared with GpuSwarm.ts. */
+export const U_VEC4S = 22;
 
 const D = TUNING.gridDim;
 
@@ -544,6 +549,10 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
   let evade = U[17].w;
   let evadeCen = U[18].xyz;
   let sheet = U[18].w;
+  let turnOld = U[20].xyz;
+  let turnR = U[20].w;
+  let turnIdx = u32(U[21].x);
+  let turnOn = U[21].y > 0.5 && turnIdx < n;
   let perception2 = perception * perception;
   let cen = centroid[0].xyz;
   // The center the herd/rally/regroup drives aim for: with evade on, the
@@ -571,6 +580,16 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
   let spdF = st.traits.x;
   let social = st.traits.y;
   let seed = st.traits.z;
+
+  // The turn wave: until the front (a sphere growing from the vanguard
+  // fish) reaches this fish it keeps willing the old heading, so the turn
+  // is led by a small group and spreads by alignment instead of snapping
+  // the whole school at once. Outside a turn myHead == head.
+  var myHead = head;
+  if (turnOn) {
+    let tc = dynIn[turnIdx].pe.xyz;
+    if (distance(pos, tc) > turnR) { myHead = turnOld; }
+  }
 
   // ---- Host events (burst / startle / vanguard / wander / scatter /
   // spontaneous ignition / strike / shiver). The CPU applies these between
@@ -620,10 +639,12 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
         let dv = length(dd);
         if (dv <= rv) {
           let w = 1.0 - dv / rv;
-          let dart = (2.0 + rnd(i, salt) * 1.4) * (0.4 + 0.6 * w);
+          // The pocket leads rather than flashes: a firmer dart onto the NEW
+          // heading (head, not myHead: the wave front starts at radius 0, so
+          // these fish would otherwise still read the old one) and no glow.
+          let dart = (1.9 + rnd(i, salt) * 1.0) * (0.4 + 0.6 * w);
           vel += vec3f(head.x * dart, head.y * dart, head.z * dart * 0.6);
           gaitClock = 0.0;
-          glow = max(glow, 0.3 * w);
         }
       }
       case EV_WANDER: {
@@ -725,7 +746,7 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
           let amp = E.misc.x * (1.0 - d / r);
           fear = max(fear, amp);
           // The epicenter fish has no outward direction: it darts ahead.
-          let away = select(head, dd / max(d, 1e-6), d > 1e-3);
+          let away = select(myHead, dd / max(d, 1e-6), d > 1e-3);
           let kick = 2.5 * amp;
           vel += vec3f(away.x * kick, away.y * kick, away.z * kick * 0.6);
         }
@@ -1070,7 +1091,7 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
   // ---- The school's collective will: cruise along the shared heading ----
   if (mode == FLOCK && driveW > 0.01) {
     let want = maxSpeedBase * spdF * dirSpeed;
-    let w = clampLen(head * want - vel, MAX_FORCE);
+    let w = clampLen(myHead * want - vel, MAX_FORCE);
     acc += w * (driveW * (0.7 + 0.3 * social));
   }
 
@@ -1300,8 +1321,11 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
       let sp = length(vel);
       let blend = select(0.2, dirSpeed * 1.2, mode == FLOCK);
       var d3: vec3f;
-      if (sp > 0.2) { d3 = vel / sp + head * blend; }
-      else { d3 = head + head * blend; }
+      // myHead, not head: during a turn the gait must not thrust fish
+      // outside the wavefront onto the new heading (that leak turned the
+      // propagating turn back into a whole-school rotation).
+      if (sp > 0.2) { d3 = vel / sp + myHead * blend; }
+      else { d3 = myHead + myHead * blend; }
       let dl = max(length(d3), 1e-6);
       let imp = gaitP * spdF * (0.4 + dirSpeed * 0.9 + fearI * 0.7)
         * maxSpeedBase * 0.34;
