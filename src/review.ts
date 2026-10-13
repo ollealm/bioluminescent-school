@@ -162,17 +162,23 @@ function stamp(ctx: CanvasRenderingContext2D, text: string, x: number, y: number
 
 const pct = (v: number): string => `${(v * 100).toFixed(1)}%`;
 
+/** Filmstrips in flight, and the keep-alive value from before the first. */
+let filming = 0;
+let keepAliveBefore: boolean | undefined;
+
 export async function runFilmstrip(opts: FilmstripOptions = {}): Promise<FilmstripResult> {
   // The strip films the running loop. A hidden pane (rAF suspended) only
   // steps through main.ts's fallback timer, which skips hidden tabs unless
-  // kept alive; without this every frame is the same frozen school.
+  // kept alive; without this every frame is the same frozen school. Counted,
+  // not saved per call: with overlapping strips, a save/restore pair turned
+  // keep-alive off under the second strip and then left it on for good.
   const win = window as Win;
-  const prev = win.__keepAlive;
+  if (filming++ === 0) keepAliveBefore = win.__keepAlive;
   win.__keepAlive = true;
   try {
     return await filmstrip(opts);
   } finally {
-    win.__keepAlive = prev;
+    if (--filming === 0) win.__keepAlive = keepAliveBefore;
   }
 }
 
