@@ -804,10 +804,10 @@ export class ParticleSystem implements SwarmSystem {
     // color) are what resize() wakes them with.
     for (let i = 0; i < cap; i++) {
       // Spawn in a soft sphere; a few in an outer shell for loose whiskers.
-      // A thin fringe of strays, not v3's 15% halo out to 1.4R: the halo
+      // A 1% fringe of strays, not v3's 15% halo out to 1.4R: the halo
       // read as "a sphere inside a sparser sphere" on every reload and the
       // first seconds were always the same collapse (owner's note).
-      const shell = Math.random() < 0.04;
+      const shell = Math.random() < 0.01;
       const r = shell
         ? R * (0.85 + Math.random() * 0.2)
         : R * 0.8 * Math.cbrt(Math.random());
