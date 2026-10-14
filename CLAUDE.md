@@ -10,6 +10,13 @@ light), and the eight dynamical invariants all survive the port. Read it
 before changing behavior or tuning; `docs/NOTES.md` has the design chronicle
 (why each lever exists, what was tried and reverted).
 
+This repo is public (MIT) and ships as a library: `src/school.ts` exports
+`mountSchool()`, `src/main.ts` is the bare demo page. The olle.work site
+(mail address, link document, licensed font, favicon) is the private repo
+`ollealm/olle.work`, which installs this one by git tag; never add
+site-only or licensed assets here. To ship engine changes to the site: tag
+a release here, bump the tag there, deploy from there.
+
 Verify with `npm run typecheck` and the acceptance probes (`window.harness()`).
 `snapshots/site-default.json` is v3's canonical state (the GPU backend
 reproduces it; the CPU engine keeps its always-on ports, see docs/NOTES.md §3)
