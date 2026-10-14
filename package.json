@@ -1,8 +1,18 @@
 {
   "name": "bioluminescent-school",
   "private": true,
-  "version": "4.0.0",
+  "version": "4.1.0",
+  "description": "A school of 25,000 bioluminescent particles simulated in WebGPU compute, with a CPU fallback",
+  "license": "MIT",
+  "repository": "github:ollealm/bioluminescent-school",
   "type": "module",
+  "exports": {
+    ".": "./src/school.ts"
+  },
+  "files": [
+    "src",
+    "snapshots"
+  ],
   "scripts": {
     "dev": "vite --port 5209 --strictPort",
     "build": "vite build",

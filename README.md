@@ -11,8 +11,7 @@ predator.
 *A cursor stir through the school, 12 frames 0.65 s apart (the red ring is
 the cursor): the school parts, bolts, then collapses back into one body.*
 
-**Live:** <https://bioluminescent-gpu-next.vercel.app> (a preview deploy
-for now). Needs a browser with WebGPU for the full school; anything else
+**Live:** <https://olle.work>. Needs a browser with WebGPU for the full school; anything else
 falls back to the CPU engine with a few thousand fish.
 
 It began as a rewrite of [bioluminescent-swarm](https://bioluminescent.vercel.app)
@@ -30,6 +29,35 @@ npm run dev        # http://localhost:5209
 npm run typecheck
 npm run build      # static bundle in dist/
 ```
+
+## Use it in a page
+
+The package ships as TypeScript source, for Vite. Install it from a tag:
+
+```
+npm install github:ollealm/bioluminescent-school#v4.1.0
+```
+
+```ts
+import { mountSchool } from "bioluminescent-school";
+
+// Mounts into #app by default. `ignore` names your own UI, so clicks
+// on it never set off a light cascade.
+mountSchool({ ignore: "#nav" });
+```
+
+Give the container `position: fixed; inset: 0`, and tell Vite to
+transform the package rather than pre-bundle it (it uses
+`import.meta.glob` for its feels):
+
+```ts
+// vite.config.ts
+export default defineConfig({ optimizeDeps: { exclude: ["bioluminescent-school"] } });
+```
+
+Type-checking it needs `@webgpu/types` and `@types/three`, as in this
+repo's `tsconfig.json`. [olle.work](https://olle.work) is built this way:
+its own page, mail address, notes and font, on top of this package.
 
 No runtime dependencies on the GPU path; three.js is lazy-loaded only for
 the CPU fallback.
@@ -55,7 +83,8 @@ src/
   presets.ts       v3 preset matrix
   system.ts        SwarmSystem: the interface both backends implement
   feel.ts          named feels (snapshots/*.json), ?feel=
-  main.ts          boot: WebGPU detect → gpu/ ; else lazy-load cpu/ (three.js chunk)
+  school.ts        mountSchool(): WebGPU detect → gpu/ ; else lazy-load cpu/ (three.js chunk)
+  main.ts          the demo page: one mountSchool() call
   governor.ts      adaptive count governor (GPU and CPU meters)
   harness.ts       acceptance probes (async, backend-agnostic)
   review.ts        filmstrip contact sheets for visual review

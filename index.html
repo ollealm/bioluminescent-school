@@ -7,112 +7,26 @@
     <meta name="theme-color" content="#010407" />
     <meta name="color-scheme" content="dark" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <title>olle.work</title>
-    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png" />
-    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="preload" href="/fonts/nhg-text-55.woff2" as="font" type="font/woff2" crossorigin />
+    <title>bioluminescent school</title>
     <style>
-      @font-face {
-        font-family: "Neue Haas Grotesk Text";
-        src: url("/fonts/nhg-text-55.woff2") format("woff2");
-        font-weight: 400; font-style: normal; font-display: swap;
-      }
       * { margin: 0; padding: 0; box-sizing: border-box; }
       html, body { height: 100%; overflow: hidden; background: #010407; }
       body {
         background:
           radial-gradient(120% 90% at 50% 45%, #02160f 0%, #010a08 45%, #010407 100%);
-        font-family: "Neue Haas Grotesk Text", ui-sans-serif, system-ui, -apple-system, "Helvetica Neue", sans-serif;
+        font-family: ui-sans-serif, system-ui, -apple-system, "Helvetica Neue", sans-serif;
         color: rgba(190, 255, 220, 0.55);
         -webkit-font-smoothing: antialiased;
       }
       #app { position: fixed; inset: 0; }
       #app canvas { display: block; touch-action: none; }
-      /* UI text: the page's main color at rest, white on hover. */
-      :root { --ui-main: rgb(228, 255, 240); --ui-bright: #fff; --ui-size: 13px; }
-      .overlay {
-        position: fixed;
-        pointer-events: none;
-        user-select: none;
-        letter-spacing: 0.04em;
-        z-index: 5;
-      }
-      .brand {
-        top: 22px; left: 26px;
-        font-size: var(--ui-size);
-        font-family: inherit;
-        letter-spacing: 0.04em;
-        color: var(--ui-main);
-        background: none; border: 0; padding: 4px 0; cursor: pointer;
-        pointer-events: auto; user-select: none;
-      }
-      .brand:hover { color: var(--ui-bright); }
-      .brand.copied { color: rgba(190, 255, 220, 0.55); }
-      .hint { display: none; }
-      /* The document: icon top-right, floating transparent note with thin borders. */
-      .doc-toggle {
-        position: fixed; top: 20px; right: 24px; z-index: 6;
-        width: 28px; height: 28px; padding: 4px;
-        background: none; border: 0; cursor: pointer;
-        color: var(--ui-main);
-      }
-      .doc-toggle:hover { color: var(--ui-bright); }
-      .doc-toggle svg { width: 100%; height: 100%; display: block; }
-      .doc {
-        position: fixed; top: 58px; right: 24px; z-index: 6;
-        width: min(280px, calc(100vw - 48px));
-        padding: 18px 22px 20px;
-        border: 1px solid var(--ui-main);
-        background: transparent;
-        color: var(--ui-main);
-        font-size: var(--ui-size); line-height: 1.9; letter-spacing: 0.04em;
-        cursor: grab; touch-action: none; user-select: none;
-      }
-      .doc.dragging { cursor: grabbing; }
-      .doc[hidden] { display: none; }
-      .doc ul { list-style: none; }
-      .doc-foot { margin-top: 1.9em; }
-      .doc a {
-        color: var(--ui-main); cursor: pointer;
-        text-decoration: underline currentColor; text-decoration-thickness: 1px; text-underline-offset: 3px;
-      }
-      .doc a:hover { color: var(--ui-bright); }
-      .doc-close {
-        position: absolute; top: 6px; right: 8px;
-        background: none; border: 0; padding: 4px 6px; cursor: pointer;
-        color: var(--ui-main); font: inherit; font-size: 17px; line-height: 1;
-      }
-      .doc-close:hover { color: var(--ui-bright); }
-      @media (max-width: 640px) { .doc-toggle { top: 14px; right: 16px; } .doc { top: 52px; right: 16px; } }
+      /* The panel opens with D; the page is the school alone. */
       .blm-toggle { display: none !important; }
-      @media (max-width: 640px) {
-        .brand { top: 16px; left: 18px; }
-        .hint { bottom: 14px; left: 18px; }
-      }
     </style>
   </head>
   <body>
     <div id="app"></div>
-    <button class="overlay brand" id="mail" type="button" title="copy address">hi@olle.work</button>
     <span id="backend-tag" hidden></span>
-    <button class="doc-toggle" id="doc-toggle" type="button" aria-label="open notes" aria-expanded="false" aria-controls="doc">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M6 3.5h8.5L19 8v12.5H6z"/><path d="M14.5 3.5V8H19"/>
-        <path d="M9 12h7M9 15h7M9 18h4.5"/>
-      </svg>
-    </button>
-    <div class="doc" id="doc" hidden role="dialog" aria-label="notes">
-      <button class="doc-close" id="doc-close" type="button" aria-label="close">×</button>
-      <ul>
-        <li><a href="https://figur123.com/" target="_blank" rel="noopener">figur123.com</a></li>
-        <li><a href="https://sapgoodenergy.com/?popups=off" target="_blank" rel="noopener">sapgoodenergy.com</a></li>
-        <li><a href="https://www.mammateam.com/" target="_blank" rel="noopener">mammateam.com</a></li>
-        <li><a href="https://elverket.com/" target="_blank" rel="noopener">elverket.com</a></li>
-        <li><a href="https://unitsystems.vercel.app/" target="_blank" rel="noopener">unitsystems.co</a></li>
-      </ul>
-      <p class="doc-foot"><a href="https://github.com/ollealm" target="_blank" rel="noopener">github.com/ollealm</a></p>
-    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

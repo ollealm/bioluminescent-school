@@ -267,5 +267,5 @@ job is to stay the tuned, working reference.
 
 ---
 
-*Repo: github.com/ollealm/bioluminescent-swarm · v3, ~2,600 particles CPU ·
+*v3: <https://bioluminescent.vercel.app> · ~2,600 particles CPU ·
 history of why each system exists is in the commit messages.*
