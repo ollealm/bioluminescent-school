@@ -126,8 +126,6 @@ export function installFeelSwitcher(
     return true;
   };
 
-  panel.setFeels(FEEL_NAMES);
-  panel.onFeelSelect = (name) => void select(name);
   panel.onReset = () => void select(DEFAULT_FEEL, { updateUrl: false });
 
   let applied: string | null = null;
@@ -150,7 +148,6 @@ export function installFeelSwitcher(
     names: FEEL_NAMES,
     applied,
     dispose() {
-      panel.onFeelSelect = null;
       panel.onReset = undefined;
     },
   };

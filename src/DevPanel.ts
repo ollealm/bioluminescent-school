@@ -235,10 +235,6 @@ const CSS = `
   padding: 7px 4px; cursor: pointer; transition: all .12s ease;
 }
 .blm-action:hover { border-color: rgba(96, 255, 178, 0.6); background: rgba(30, 120, 80, 0.3); }
-.blm-feels { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-.blm-feel { text-align: left; padding-left: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.blm-feel-key { color: rgba(96, 255, 178, 0.45); margin-right: 6px; }
-.blm-feel.active .blm-feel-key { color: #7dffb0; }
 .blm-moods { grid-template-columns: repeat(3, 1fr); }
 .blm-foot { margin-top: 10px; font-size: 9px; color: rgba(150, 220, 185, 0.35); text-align: center; }
 @media (max-width: 640px) {
@@ -282,14 +278,8 @@ export class DevPanel {
   private rebuildTimer: number | undefined;
   private onKey: (e: KeyboardEvent) => void;
   private opts: Required<Pick<DevPanelOptions, "countMin" | "countMax" | "countStep" | "backendLabel">>;
-  private feelWrap!: HTMLDivElement;
-  private feelGrid!: HTMLDivElement;
-  private feelBtns = new Map<string, HTMLButtonElement>();
-  private feelName: string | null = null;
   private moodBtns = new Map<string | null, HTMLButtonElement>();
   private moodNow: HTMLDivElement | null = null;
-  /** Set by installFeelSwitcher (src/feel.ts); Feel A/B buttons route through it. */
-  onFeelSelect: ((name: string) => void) | null = null;
   /** Set by installFeelSwitcher: Reset lands on the shipped feel, not bare v3 defaults. */
   onReset?: () => void;
 
@@ -361,28 +351,8 @@ export class DevPanel {
     this.moodNow.textContent = `now: ${this.system.moodName}`;
   }
 
-  /** Populate the Feel A/B row; index i gets hotkey i+1 (first nine). */
-  setFeels(names: readonly string[]): void {
-    this.feelGrid.replaceChildren();
-    this.feelBtns.clear();
-    names.forEach((name, i) => {
-      const btn = el("button", "blm-preset blm-feel") as HTMLButtonElement;
-      if (i < 9) btn.appendChild(el("span", "blm-feel-key", String(i + 1)));
-      btn.appendChild(document.createTextNode(name));
-      btn.title = i < 9 ? `${name} (key ${i + 1})` : name;
-      btn.addEventListener("click", () => this.onFeelSelect?.(name));
-      this.feelBtns.set(name, btn);
-      this.feelGrid.appendChild(btn);
-    });
-    this.feelWrap.style.display = names.length ? "" : "none";
-    this.setFeelName(this.feelName);
-  }
-
-  /** Highlight the active feel (null = none, e.g. after a Reset). */
-  setFeelName(name: string | null): void {
-    this.feelName = name;
-    for (const [n, btn] of this.feelBtns) btn.classList.toggle("active", n === name);
-  }
+  /** The Feel A/B row is gone (one shipped feel); kept as a no-op for callers. */
+  setFeelName(_name: string | null): void {}
 
   /** The count slider's range - feels clamp their count to it (CPU stays small). */
   get countRange(): { min: number; max: number } {
@@ -428,18 +398,6 @@ export class DevPanel {
     head.appendChild(headRight);
     root.appendChild(head);
     applyDescs(localStorage.getItem(descKey) !== "0");
-
-    // Feel A/B - whole tuned snapshots, one click apart. Empty and
-    // hidden until installFeelSwitcher hands over the names (setFeels).
-    this.feelWrap = el("div", "") as HTMLDivElement;
-    this.feelWrap.style.display = "none";
-    this.feelWrap.appendChild(el("div", "blm-sub", "Feel A/B"));
-    this.feelGrid = el("div", "blm-feels") as HTMLDivElement;
-    this.feelWrap.appendChild(this.feelGrid);
-    this.feelWrap.appendChild(
-      el("div", "blm-hint", "Full snapshots from snapshots/*.json · ?feel=name in the URL shares one"),
-    );
-    root.appendChild(this.feelWrap);
 
     // Mood - pin the director to one mood to judge it in isolation. A test
     // control only: never saved to localStorage or snapshots.
@@ -808,11 +766,7 @@ export class DevPanel {
   }
 
   private saveFeel(): void {
-    // Suggest the next letter after the active feel (lifelike-a -> lifelike-b).
-    const cur = this.feelName ?? "lifelike-a";
-    const m = /^(.*-)([a-y])$/.exec(cur);
-    const suggestion = m ? m[1] + String.fromCharCode(m[2].charCodeAt(0) + 1) : `${cur}-b`;
-    const raw = window.prompt("Save feel as (downloads <name>.json for snapshots/):", suggestion);
+    const raw = window.prompt("Save feel as (downloads <name>.json for snapshots/):", "olle-work");
     if (!raw) return;
     const name = raw.trim().replace(/\.json$/i, "").replace(/[^\w.-]+/g, "-");
     if (!name) return;
