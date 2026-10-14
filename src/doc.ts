@@ -3,8 +3,6 @@
  * note with thin borders that holds the portfolio links. It can be dragged
  * anywhere (pointer events, so touch works too) and closed. Markup and
  * styles live in index.html; this file only wires behavior.
- *
- * The link list is a placeholder set: Olle fills in the five pages.
  */
 export function installDoc(): void {
   const toggle = document.getElementById("doc-toggle");
