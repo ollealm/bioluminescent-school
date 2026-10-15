@@ -514,6 +514,18 @@ iPhones whatever the load: a 1,000-fish frame took longer than a
 12,000-fish one (13 vs 10 ms), the signature of the GPU clocking down
 when lightly loaded.
 
+**The governor trusts iOS** (v4.3.0, 2026-10-15). With `--watch` (the
+device script logging the `?diag` overlay every 2 s, `--taps` tapping
+over WebDriver), the iPhone 11 on iOS 26 shed 12k and 20k to the 8,000
+floor within 8 s while running 60 fps with no late frames: the meter read
+16-19.6 ms of 16.7 at 8k, 20k and 30k alike, and the meter-over-budget
+rule fired on it. Held fixed, the 11 runs 30k clean; at 45k it falls
+behind for real, and that shows: 43-55 fps, up to 17% late, meter 65 ms.
+So OVER_SHARE is 1.5 (a GPU keeping up one frame behind reads ~1.1x), and
+the touch default is 20k (iOS 26, so WebGPU in iOS Safari, needs an
+iPhone 11 or newer). Verified on the 11: 20k holds through 10 s of taps
+at 60 fps; 45k sheds to 29k in 4 s, then to 23k under heavy tapping.
+
 The points now accumulate into a half-float target with the same
 `SRC_ALPHA, ONE` blend, then resolve through the GPU's `fsTonemap`: the
 0.72 knee on the max channel, hue ratios kept, alpha clamped, the same
