@@ -17,8 +17,10 @@ import type { SwarmSystem } from "./system";
 // throttled (iOS Low Power Mode, Chrome Battery Saver: 30 Hz). So a step
 // down needs two signals over the last second: frames missing vsync (more
 // than LATE_SHARE of them), AND the school's own work (a backend's meter,
-// below) nearly filling the frame budget. A step down also has to lower
-// the meter, or shedding stops.
+// below) nearly filling the frame budget. Or one: the meter over the whole
+// budget, because frames can drop where rAF never sees them (iOS Safari
+// keeps rAF at 60 while the GPU falls behind). A step down also has to
+// lower the meter, or shedding stops.
 //
 // One per mount: it closes over that backend's system, panel and meter.
 
@@ -44,6 +46,8 @@ export interface GovernorStatus {
   lateShare: number;
   /** The meter reading above which the school counts as bound. */
   boundMs: number;
+  /** The frame budget: a meter reading over it sheds on its own. */
+  budgetMs: number;
   /** One short phrase: what it's doing, or why it isn't shedding. */
   state: string;
 }
@@ -143,6 +147,13 @@ const LATE_SHARE = 0.04;
 // to the meter: the GPU meter is submit-to-done latency, which includes
 // frames queued behind each other, so it overstates per-frame work.
 const STEP_DOWN = 0.8;
+// Overloaded: the meter's median over the window exceeds this share of the
+// budget, so the school can't finish a frame per vsync whatever rAF says.
+// An iPhone 13 Pro at 20k read 60 fps, 0% late, GPU 18.9 ms of a 16.7 ms
+// period, and visibly stuttered: Safari doesn't hold rAF back for the GPU,
+// so the drops happen at presentation. The Mac agrees from the other side:
+// 200k read 14 ms against 8.3 and stuttered, 160k read 6.5 and ran clean.
+const OVER_SHARE = 1;
 const STEP_UP = 1.15;
 // Decisions look at a trailing window this long, never reaching back
 // across the last step (plus SETTLE_MS for the resize to land) or stall.
@@ -368,11 +379,15 @@ export function makeGovernor(
       // would let frames land on time. Below that, late frames come from
       // something shedding can't fix (a 30 Hz cap with 4 ms of work).
       const bound = meter.n > 0 && meter.median > spec.boundShare * budget;
-      if (lateShare > LATE_SHARE && spread && bound && governed > floor && !shedBlocked) {
+      const overloaded = meter.n >= 10 && meter.median > OVER_SHARE * budget;
+      const stutter = lateShare > LATE_SHARE && spread && bound;
+      if ((stutter || overloaded) && governed > floor && !shedBlocked) {
         step(
           -1,
           Math.max(floor, Math.round((governed * STEP_DOWN) / quantum) * quantum),
-          `${Math.round(lateShare * 100)}% of frames late (${label} ~${meter.median.toFixed(1)} ms)`,
+          stutter
+            ? `${Math.round(lateShare * 100)}% of frames late (${label} ~${meter.median.toFixed(1)} ms)`
+            : `${label} ~${meter.median.toFixed(1)} ms, over a ${budget.toFixed(1)} ms frame`,
           meter.median,
         );
         return;
@@ -400,6 +415,7 @@ export function makeGovernor(
       loadMs,
       lateShare,
       boundMs: spec.boundShare * budgetMs(),
+      budgetMs: budgetMs(),
       state:
         warmup > 0
           ? "warming up"

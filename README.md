@@ -130,7 +130,8 @@ position on the GPU, so scheduling never waits on a readback.
 **Degrading.** Smooth comes first: a governor cuts the count by a fifth
 (floor 8,000) as soon as a second of frames keeps missing vsync (over 4%,
 spread across the second, not one burst) *and* the GPU is busy for most
-of each frame, then grows back by 15% after 20 s of headroom. It defends
+of each frame, or as soon as the GPU needs more than a whole frame (iOS
+Safari drops those frames without delaying rAF), then grows back by 15% after 20 s of headroom. It defends
 the display's own rate up to 120 Hz, and a display the OS caps at 30 Hz
 sheds nothing. A step must lower GPU time or shedding stops, and a
 down/up/down within two minutes holds the lower count for the session; a

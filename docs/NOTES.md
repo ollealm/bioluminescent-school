@@ -460,6 +460,14 @@ unchanged, slow on purpose. Measured on the M2 Max: 200k → 160k 2.5 s
 after load, then 120 fps with no late frames. In a mocked-clock replay
 the iPhone case goes 25k → 20k → 16k by 5 s; a 30 Hz cap, a GC hitch a
 second and jittery rAF timestamps at 25k shed nothing.
+The iPhone then showed the other blind spot: at 20k it read 60 fps, 0%
+late, GPU 18.9 ms against a 16.7 ms period, and still stuttered. iOS
+Safari keeps rAF at 60 while the GPU falls behind, so frames drop at
+presentation where no frame timing can see them. So a meter median over
+the whole budget (`OVER_SHARE`) now sheds on its own; the Mac agrees from
+the other side (200k: 14 ms against 8.3, stuttering; 160k: 6.5, clean).
+In the replay the measured iPhone goes 25k → 20k → 16k by 3.3 s, and the
+12k phone default is untouched.
 
 The points now accumulate into a half-float target with the same
 `SRC_ALPHA, ONE` blend, then resolve through the GPU's `fsTonemap`: the

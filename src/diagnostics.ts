@@ -98,7 +98,7 @@ export function installDiagnostics(): Diagnostics {
         return;
       }
       meterLabel.textContent = status.label.toLowerCase();
-      meterEl.textContent = `${status.loadMs.toFixed(1)} ms (bound > ${status.boundMs.toFixed(1)})`;
+      meterEl.textContent = `${status.loadMs.toFixed(1)} of ${status.budgetMs.toFixed(1)} ms`;
       governorEl.textContent = status.state;
     },
   };
