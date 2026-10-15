@@ -164,10 +164,13 @@ const WARMUP_S = 2;
 
 /**
  * Frame cadence over the last few seconds: the display period, and which
- * frames missed a vsync. The period is the 10th percentile of recent frame
- * times (rAF timestamps jitter, and one early frame mustn't pass for a
- * fast display), capped at 60 Hz's, so a device that runs every frame
- * slow can't take its slow cadence for the display's.
+ * frames missed a vsync. The period is the median of recent frame times,
+ * capped at 60 Hz's, so a device that runs every frame slow can't take its
+ * slow cadence for the display's. Not a low percentile: after a late
+ * frame rAF often fires a short catch-up frame, and under tapping on an
+ * iPhone 11 those put the 10th percentile at 9 ms on a 60 Hz display, so
+ * every on-time frame read late and the school shed to the floor. Catch-up
+ * frames follow late ones, so they can never be the median.
  */
 export class FramePacer {
   private readonly at = new Float64Array(256);
@@ -188,7 +191,7 @@ export class FramePacer {
       this.sorted.length = 0;
       for (let k = 0; k < this.len; k++) this.sorted.push(this.ms[k]);
       this.sorted.sort((a, b) => a - b);
-      this.periodMs = Math.min(1000 / 60, this.sorted[Math.floor(this.len * 0.1)]);
+      this.periodMs = Math.min(1000 / 60, this.sorted[this.len >> 1]);
     }
   }
 
