@@ -1,7 +1,7 @@
 import { DevPanel } from "./DevPanel";
 import { installDiagnostics, type Diagnostics } from "./diagnostics";
 import { installFeelSwitcher, type FeelSwitcher } from "./feel";
-import { cpuSpec, gpuSpec, makeGovernor, type Governor, type GovernorSpec } from "./governor";
+import { cpuSpec, FramePacer, gpuSpec, makeGovernor, type Governor, type GovernorSpec } from "./governor";
 import type { FilmstripOptions } from "./review";
 import type { Snapshot, SwarmSystem } from "./system";
 
@@ -332,10 +332,8 @@ let last = performance.now();
 let lastRaf = 0;
 let frames = 0;
 let fpsTime = 0;
-// For the diagnostics' late-frame share: the fastest frame seen stands for
-// the display period, and a frame over 1.5 periods missed a vsync.
-let fastestMs = Infinity;
-let lateFrames = 0;
+// For the diagnostics: a frame over 1.5 display periods missed a vsync.
+const pacer = new FramePacer();
 let worstMs = 0;
 
 function body(now: number): void {
@@ -351,21 +349,22 @@ function body(now: number): void {
   live.governor?.tick(rawMs, updateMs);
 
   frames++;
-  if (rawMs > 4) fastestMs = Math.min(fastestMs, rawMs);
-  if (rawMs > fastestMs * 1.5) lateFrames++;
-  worstMs = Math.max(worstMs, rawMs);
+  if (diagnostics) {
+    pacer.push(now, rawMs);
+    worstMs = Math.max(worstMs, rawMs);
+  }
   // Wall time, not the clamped sim dt: under 20 fps the clamp read as 20.
   fpsTime += rawMs / 1000;
   if (fpsTime >= 0.5) {
     live.panel.setFps(frames / fpsTime);
     if (diagnostics) {
-      diagnostics.setFrames(frames / fpsTime, lateFrames / frames, worstMs);
+      const late = pacer.lateSince(now - fpsTime * 1000, pacer.periodMs * 1.5);
+      diagnostics.setFrames(frames / fpsTime, late.share, worstMs);
       diagnostics.setCount(live.system.getCount(), live.governor?.target() ?? null);
       diagnostics.setGovernor(live.governor?.status() ?? null);
     }
     frames = 0;
     fpsTime = 0;
-    lateFrames = 0;
     worstMs = 0;
   }
 }

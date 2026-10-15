@@ -9,14 +9,16 @@ import type { SwarmSystem } from "./system";
 // (the GPU renderer's own, the CPU spec's below) keeps the perceived mass
 // steady — so both directions are invisible.
 //
+// Smooth first: a hitch is worse than a thinner school, so it sheds fast
+// (a step a second while frames miss vsync) and grows back slowly (20 s
+// of headroom per +15%).
+//
 // Frame times alone can't tell an overloaded device from a display the OS
-// throttled (iOS Low Power Mode, Chrome Battery Saver: 30 Hz). The old
-// governor let its frame-period estimate drift up toward slow frames to
-// avoid shedding fish under a throttle, and so it also normalized real
-// overload: a steady 25-30 fps on a 60 Hz display never stepped down. So
-// a step down needs two signals: frames late against the display, AND the
-// school's own work (a backend's meter, below) nearly filling a 60 Hz
-// period. A step down also has to lower the meter, or shedding stops.
+// throttled (iOS Low Power Mode, Chrome Battery Saver: 30 Hz). So a step
+// down needs two signals over the last second: frames missing vsync (more
+// than LATE_SHARE of them), AND the school's own work (a backend's meter,
+// below) nearly filling the frame budget. A step down also has to lower
+// the meter, or shedding stops.
 //
 // One per mount: it closes over that backend's system, panel and meter.
 
@@ -38,6 +40,8 @@ export interface GovernorStatus {
   /** The meter's label ("GPU", "sim") and its smoothed reading. */
   label: string;
   loadMs: number;
+  /** Share of frames that missed vsync over the last decision window. */
+  lateShare: number;
   /** The meter reading above which the school counts as bound. */
   boundMs: number;
   /** One short phrase: what it's doing, or why it isn't shedding. */
@@ -52,7 +56,10 @@ export interface GovernorSpec {
   quantum: number;
   /** What the meter measures, for the log lines ("GPU", "sim"). */
   label: string;
-  /** Bound: the meter reads above this share of a 60 Hz period, so fewer
+  /** The fastest display the governor defends: the frame budget is the
+   * display's period, but never shorter than this rate's. */
+  maxHz: number;
+  /** Bound: the meter reads above this share of the frame budget, so fewer
    * fish would let frames land on time. */
   boundShare: number;
   /** Headroom: the meter reads below this share, so a step up fits. */
@@ -78,6 +85,9 @@ export function gpuSpec(device: GPUDevice): GovernorSpec {
     floor: 8000,
     quantum: 500,
     label: "GPU",
+    // A 120 Hz display is defended at 120: 200k on an M2 Max ran at 107 fps
+    // with every twentieth frame doubled, and it read as struggling.
+    maxHz: 120,
     boundShare: 0.8,
     headroomShare: 0.5,
     probe: (done) => {
@@ -112,6 +122,10 @@ export function cpuSpec(app: { setOpacityScale: (k: number) => void }): Governor
     floor: 1000,
     quantum: 100,
     label: "sim",
+    // 60, not the display's 120: at an 8.3 ms budget headroom was out of
+    // reach (2,000 fish cost ~4 ms of update() on an M2 Max, so a school
+    // shed under a CPU spike never grew back; measured 2026-10-13).
+    maxHz: 60,
     boundShare: 0.6,
     headroomShare: 0.4,
     onCount: (governed, target) =>
@@ -121,15 +135,70 @@ export function cpuSpec(app: { setOpacityScale: (k: number) => void }): Governor
   };
 }
 
-// The budget the meter is judged against: a 60 Hz period on any display.
-// Late frames are judged against 45 fps on a 120 Hz display too, so the
-// governor only defends 60 fps there, and an 8.3 ms period made headroom
-// unreachable: 2,000 CPU fish cost ~4 ms of update() on an M2 Max, so a
-// school shed under a CPU spike never grew back (measured, 2026-10-13).
-const BUDGET_MS = 1000 / 60;
-// How fast on-time frames pay back late time while the school is bound
-// (see tick): sheds when over ~13% of the time is late.
-const REPAY = 0.15;
+// Shed when more than this share of the last second's frames missed vsync
+// (at 60 Hz, more than two a second) while the school is bound. 200k on a 120 Hz
+// M2 Max missed ~5% and felt it; 100k felt fine.
+const LATE_SHARE = 0.04;
+// Each step down keeps this share of the school. Fixed, not proportional
+// to the meter: the GPU meter is submit-to-done latency, which includes
+// frames queued behind each other, so it overstates per-frame work.
+const STEP_DOWN = 0.8;
+const STEP_UP = 1.15;
+// Decisions look at a trailing window this long, never reaching back
+// across the last step (plus SETTLE_MS for the resize to land) or stall.
+const WINDOW_MS = 1000;
+const SETTLE_MS = 250;
+const HEADROOM_S = 20;
+const WARMUP_S = 2;
+
+/**
+ * Frame cadence over the last few seconds: the display period, and which
+ * frames missed a vsync. The period is the 10th percentile of recent frame
+ * times (rAF timestamps jitter, and one early frame mustn't pass for a
+ * fast display), capped at 60 Hz's, so a device that runs every frame
+ * slow can't take its slow cadence for the display's.
+ */
+export class FramePacer {
+  private readonly at = new Float64Array(256);
+  private readonly ms = new Float64Array(256);
+  private head = 0;
+  private len = 0;
+  private sinceSort = 0;
+  private readonly sorted: number[] = [];
+  periodMs = 1000 / 60;
+
+  push(now: number, rawMs: number): void {
+    this.at[this.head] = now;
+    this.ms[this.head] = rawMs;
+    this.head = (this.head + 1) & 255;
+    this.len = Math.min(256, this.len + 1);
+    if (++this.sinceSort >= 16 && this.len >= 32) {
+      this.sinceSort = 0;
+      this.sorted.length = 0;
+      for (let k = 0; k < this.len; k++) this.sorted.push(this.ms[k]);
+      this.sorted.sort((a, b) => a - b);
+      this.periodMs = Math.min(1000 / 60, this.sorted[Math.floor(this.len * 0.1)]);
+    }
+  }
+
+  /** Frames since `t` that ran over `lateMs`: how many, out of how many,
+   * and the share. */
+  lateSince(t: number, lateMs: number): { late: number; n: number; share: number } {
+    let n = 0;
+    let late = 0;
+    for (let k = 0; k < this.len; k++) {
+      const idx = (this.head - 1 - k) & 255;
+      if (this.at[idx] < t) break;
+      n++;
+      if (this.ms[idx] > lateMs) late++;
+    }
+    return { late, n, share: n > 0 ? late / n : 0 };
+  }
+
+  clear(): void {
+    this.len = 0;
+  }
+}
 
 export function makeGovernor(
   system: SwarmSystem,
@@ -139,18 +208,15 @@ export function makeGovernor(
   const { floor, quantum, label } = spec;
   let target = system.getCount(); // what the user wants
   let governed = target; // what we've set
-  // The display's frame period: the fastest frame seen, but never slower
-  // than 60 Hz, so a device that boots already overloaded can't take its
-  // slow cadence for the display's. It drifts up only while the meter
-  // reads unbound (a 120 Hz window moved to a 60 Hz screen), never under
-  // load.
-  let displayMs = 1000 / 60;
+  const pacer = new FramePacer();
+  // The frame budget: the display's period, but no shorter than maxHz's.
+  const budgetMs = (): number => Math.max(pacer.periodMs, 1000 / spec.maxHz);
   let loadMs = 0; // smoothed meter reading per frame (outlier-clamped)
-  // Recent raw samples (capped only at the stall threshold), for the shed
-  // check's window medians: loadMs's clamp (~67 ms at 60 Hz) would hide the
-  // drop on a GPU at 100 ms/frame, a smoothed snapshot is too noisy to judge
-  // a few-percent drop, and a mean lets one GC pause in the window fake a
-  // failed step and block shedding for the session.
+  // Recent raw samples (capped only at the stall threshold), for window
+  // medians: loadMs's clamp would hide the drop on a GPU at 100 ms/frame,
+  // a smoothed snapshot is too noisy to judge a few-percent drop, and a
+  // mean lets one GC pause in the window fake a failed step and block
+  // shedding for the session.
   const RING = 256;
   const sampleAt = new Float64Array(RING);
   const sampleMs = new Float64Array(RING);
@@ -170,27 +236,29 @@ export function makeGovernor(
   };
   // Bumped on a stall so a probe that spans it is discarded on landing.
   let probeEpoch = 0;
-  let over = 0; // seconds of late, bound frames, net of slow repayment
+  // Decisions only use frames after this (the last step's settle, a stall).
+  let since = -Infinity;
+  let lateShare = 0; // the last window's, for status()
   let under = 0; // seconds of headroom
-  let warmup = 5;
+  let warmup = WARMUP_S;
   // Step history for the oscillation guard: after down → up → down within
   // two minutes the lower level sticks for the session, so the count
   // can't visibly breathe up and down.
   const steps: { dir: -1 | 1; at: number }[] = [];
   let sticky = false;
-  // Shedding has to pay off: the meter over the second after a step down
-  // must fall by at least a quarter of the count cut (a 22% cut: 5.5%;
+  // Shedding has to pay off: the meter over the window after a step down
+  // must fall by at least a quarter of the count cut (a 20% cut: 5%;
   // fixed costs like the tonemap pass don't shrink with the count). If it
   // doesn't, the load isn't the school's (a busy main thread delaying the
   // probe, another app on the GPU) and cutting more fish won't help, so
   // step-downs stop until the slider moves.
-  let verify: { from: number; at: number; before: number; cut: number } | null = null;
+  let verify: { at: number; before: number; cut: number } | null = null;
   let shedBlocked = false;
 
   const record = (ms: number): void => {
     // Clamped so one outlier (a GC pause, a deferred completion) can't
     // flip the estimate on its own.
-    loadMs += (Math.min(ms, 4 * displayMs) - loadMs) * 0.25;
+    loadMs += (Math.min(ms, 4 * budgetMs()) - loadMs) * 0.25;
     sampleAt[ringHead] = performance.now();
     sampleMs[ringHead] = Math.min(ms, 400);
     ringHead = (ringHead + 1) % RING;
@@ -207,23 +275,16 @@ export function makeGovernor(
     }
   };
 
-  const step = (dir: -1 | 1, count: number, why: string): void => {
+  const step = (dir: -1 | 1, count: number, why: string, meterMs: number): void => {
     const now = performance.now();
-    if (dir < 0) {
-      const before = medianSince(now - 1000);
-      verify = {
-        from: now + 250, // let the resize land before judging
-        at: now + 1250,
-        before: before.n > 0 ? before.median : loadMs,
-        cut: 1 - count / governed,
-      };
-    }
+    since = now + SETTLE_MS;
+    verify =
+      dir < 0 ? { at: since + WINDOW_MS, before: meterMs, cut: 1 - count / governed } : null;
     governed = count;
     console.info(`[governor] ${why} — density ${dir < 0 ? "down" : "back up"} to ${governed}`);
     system.resize?.(governed);
     spec.onCount?.(governed, target);
     panel.refresh();
-    over = 0;
     under = 0;
     steps.push({ dir, at: now });
     while (steps.length && now - steps[0].at > 120_000) steps.shift();
@@ -235,29 +296,27 @@ export function makeGovernor(
   };
 
   const tick = (rawMs: number, workMs?: number): void => {
+    const now = performance.now();
     // A single long frame is a stall (tab switch, harness run, GC pause,
-    // a modal), not sustained overload: one such frame would otherwise
-    // count as "2 s over budget" by itself and drop density a notch per
-    // hiccup (observed: 25k → 9k over four console harness runs). Only
-    // sustained misses accumulate. A hidden tab defers GPU completion, so
+    // a modal), not overload: it would otherwise read as a late window and
+    // drop density a notch per hiccup (observed: 25k → 9k over four
+    // console harness runs). A hidden tab defers GPU completion, so
     // neither may feed the meter: a probe spanning it is dropped.
     if (document.hidden || rawMs > 400) {
-      over = 0;
       under = 0;
       loadMs = 0;
       ringLen = 0;
+      pacer.clear();
       probeEpoch++;
+      since = now + SETTLE_MS;
       // Judge a pending step on fresh samples after the stall.
-      if (verify) {
-        verify.from = performance.now() + 250;
-        verify.at = verify.from + 1000;
-      }
+      if (verify) verify.at = since + WINDOW_MS;
       return;
     }
+    pacer.push(now, rawMs);
     measure(workMs);
     if (warmup > 0) {
       warmup -= rawMs / 1000;
-      displayMs = Math.min(displayMs, rawMs);
       return;
     }
     const current = system.getCount();
@@ -265,17 +324,18 @@ export function makeGovernor(
       // The user took the slider — that's the new target, and a fresh start.
       target = current;
       governed = current;
-      over = 0;
       under = 0;
       steps.length = 0;
       sticky = false;
       verify = null;
       shedBlocked = false;
+      since = now + SETTLE_MS;
       spec.onCount?.(governed, target);
       return;
     }
-    if (verify && performance.now() >= verify.at) {
-      const after = medianSince(verify.from);
+    if (verify) {
+      if (now < verify.at) return;
+      const after = medianSince(since);
       if (after.n > 0 && after.median > verify.before * (1 - 0.25 * verify.cut)) {
         shedBlocked = true;
         console.info(
@@ -284,46 +344,53 @@ export function makeGovernor(
       }
       verify = null;
     }
-    // Bound: the school's work nearly fills the budget, so fewer fish
-    // would let frames land on time. Below that, late frames come from
-    // something shedding can't fix (a 30 Hz cap with 12 ms of work).
-    const bound = loadMs > spec.boundShare * BUDGET_MS;
-    if (rawMs < displayMs) displayMs = rawMs;
-    else if (!bound) displayMs = Math.min(1000 / 60, displayMs + (rawMs - displayMs) * 0.005);
-    const dtS = rawMs / 1000;
-    // Late = over 1.5 display periods and under 45 fps, so 60 fps on a
-    // 120 Hz display is never late.
-    const late = rawMs > Math.max(displayMs * 1.5, 1000 / 45);
-    if (late && bound) {
-      over += dtS;
-      under = 0;
-    } else {
-      // An on-time frame pays late time back at REPAY while the school is
-      // bound, in full when it isn't. Repaying 1:1 meant a steady 50 fps
-      // (every fifth frame doubled: visible stutter, a third of the time
-      // late) never added up to anything, so a phone stuttering at 25k
-      // never shed (iPhone 13 Pro, 2026-10-15). Now a bound school sheds
-      // once more than REPAY / (1 + REPAY) of its time is late.
-      over = Math.max(0, over - dtS * (bound ? REPAY : 1));
-      // Headroom: this frame's work would fit well inside the budget,
-      // whatever the cadence (a throttled display still has room).
-      under = loadMs < spec.headroomShare * BUDGET_MS ? under + dtS : 0;
+    const budget = budgetMs();
+    const start = Math.max(now - WINDOW_MS, since);
+    const frames = pacer.lateSince(start, budget * 1.5);
+    // Enough of a window to judge: three quarters of it, and ten frames.
+    if (now - start >= 0.75 * WINDOW_MS && frames.n >= 10) {
+      lateShare = frames.share;
+      // Stutter, not a burst: every quarter of the window has a late
+      // frame. One disturbance (another app's GPU spike, a page-side
+      // hiccup) packs its late frames into a fraction of a second, and only
+      // one over half a second long can reach all four; at 160k on the M2
+      // Max one such spike cut a school that ran a clean 120 fps.
+      let spread = true;
+      let after = frames.late;
+      for (let q = 1; q <= 3 && spread; q++) {
+        const rest = pacer.lateSince(start + ((now - start) * q) / 4, budget * 1.5).late;
+        spread = after > rest; // a late frame in quarter q
+        after = rest;
+      }
+      spread &&= after > 0; // and in the last quarter
+      const meter = medianSince(start);
+      // Bound: the school's work nearly fills the budget, so fewer fish
+      // would let frames land on time. Below that, late frames come from
+      // something shedding can't fix (a 30 Hz cap with 4 ms of work).
+      const bound = meter.n > 0 && meter.median > spec.boundShare * budget;
+      if (lateShare > LATE_SHARE && spread && bound && governed > floor && !shedBlocked) {
+        step(
+          -1,
+          Math.max(floor, Math.round((governed * STEP_DOWN) / quantum) * quantum),
+          `${Math.round(lateShare * 100)}% of frames late (${label} ~${meter.median.toFixed(1)} ms)`,
+          meter.median,
+        );
+        return;
+      }
     }
-    if (over > 2 && governed > floor && !verify && !shedBlocked) {
-      step(
-        -1,
-        Math.max(floor, Math.round((governed * 0.78) / quantum) * quantum),
-        `late frames (~${rawMs.toFixed(0)} ms, ${label} ~${loadMs.toFixed(1)} ms)`,
-      );
-    } else if (under > 20 && governed < target && !sticky) {
+    // Headroom: this frame's work would fit well inside the budget,
+    // whatever the cadence (a throttled display still has room).
+    under = loadMs < spec.headroomShare * budget ? under + rawMs / 1000 : 0;
+    if (under > HEADROOM_S && governed < target && !sticky) {
       step(
         1,
-        Math.min(target, Math.round((governed * 1.15) / quantum) * quantum),
+        Math.min(target, Math.round((governed * STEP_UP) / quantum) * quantum),
         `headroom (${label} ~${loadMs.toFixed(1)} ms)`,
+        loadMs,
       );
     }
   };
-  const boundMs = spec.boundShare * BUDGET_MS;
+
   return {
     tick,
     // A slider move since the last tick is the new target already.
@@ -331,7 +398,8 @@ export function makeGovernor(
     status: () => ({
       label,
       loadMs,
-      boundMs,
+      lateShare,
+      boundMs: spec.boundShare * budgetMs(),
       state:
         warmup > 0
           ? "warming up"
@@ -339,19 +407,15 @@ export function makeGovernor(
             ? "checking last step"
             : shedBlocked
               ? "holding: fewer fish didn't help"
-              : over > 0.1
-                ? governed > floor
-                  ? `late ${over.toFixed(1)} of 2 s`
-                  : "at floor"
-                : loadMs > boundMs
-                  ? "bound, on time"
-                  : sticky
-                    ? "holding: oscillated"
-                    : governed < target
-                      ? under > 1
-                        ? `headroom ${under.toFixed(0)} of 20 s`
-                        : "stepped down"
-                      : "idle",
+              : lateShare > LATE_SHARE && governed <= floor
+                ? "at floor"
+                : sticky
+                  ? "holding: oscillated"
+                  : governed < target
+                    ? under > 1
+                      ? `headroom ${under.toFixed(0)} of ${HEADROOM_S} s`
+                      : "stepped down"
+                    : "idle",
     }),
   };
 }

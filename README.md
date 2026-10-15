@@ -127,11 +127,14 @@ recruitment, scatter, strike, shiver, spontaneous ignitions) travel through a
 carry a particle index; a one-workgroup resolve pre-pass fills in the
 position on the GPU, so scheduling never waits on a readback.
 
-**Degrading.** A governor steps the count down on weaker GPUs (floor
-8,000) when frames run late *and* the GPU is busy for most of each one,
-so a display the OS caps at 30 Hz sheds nothing. A step must lower GPU
-time or shedding stops, and a down/up/down within two minutes holds the
-lower count for the session; a single stalled frame never counts.
+**Degrading.** Smooth comes first: a governor cuts the count by a fifth
+(floor 8,000) as soon as a second of frames keeps missing vsync (over 4%,
+spread across the second, not one burst) *and* the GPU is busy for most
+of each frame, then grows back by 15% after 20 s of headroom. It defends
+the display's own rate up to 120 Hz, and a display the OS caps at 30 Hz
+sheds nothing. A step must lower GPU time or shedding stops, and a
+down/up/down within two minutes holds the lower count for the session; a
+single stalled frame never counts.
 No WebGPU, or a software adapter, boots the CPU engine, which the same
 governor runs on its own update time (floor 1,000). A lost GPU device
 re-mounts the backend once with the current state carried over, then

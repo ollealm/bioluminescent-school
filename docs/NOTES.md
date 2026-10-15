@@ -437,6 +437,30 @@ last blocks after one step). One corner is shared with the GPU: under a
 30 Hz display cap with a sim over 10 ms, frames are late and the meter
 bound, so it sheds (2,200 → 1,300) without gaining a frame.
 
+**The governor sheds on stutter, fast** (2026-10-15). Two misses showed up
+in `?diag` on real devices. An iPhone 13 Pro at 25k stuttered visibly at
+~50 fps and never shed: "over" grew by late time and on-time frames paid
+it back one for one, so every fifth frame doubled (a third of the time
+late) never added up to the 2 s trigger. And a 120 Hz M2 Max at 200k ran
+107 fps with ~5% of frames at 13-25 ms, which felt like struggling, while
+"late" meant under 45 fps there. Now: the frame budget is the display's
+period (the 10th percentile of recent frame times, capped at 60 Hz's) but
+no shorter than `maxHz` (GPU 120, CPU 60, which keeps the CPU's reachable
+headroom from 2026-10-13); a frame is late past 1.5 budgets; and a
+trailing 1 s window sheds 20% when over 4% of its frames are late, every
+quarter of it has one (a burst under half a second, like one GPU spike
+from another app, can't qualify: at 160k one cut a school running a
+clean 120 fps), and the meter's median is bound. The window never
+reaches back across a step's 250 ms settle or a stall, so a struggling
+school steps about once a second, and warmup is 2 s instead of 5. Steps
+are a fixed −20%, not proportional to the meter: the GPU meter is
+submit-to-done latency, which counts frames queued behind each other
+(14 ms at 200k while frames landed every 8.3 ms). Growing back is
+unchanged, slow on purpose. Measured on the M2 Max: 200k → 160k 2.5 s
+after load, then 120 fps with no late frames. In a mocked-clock replay
+the iPhone case goes 25k → 20k → 16k by 5 s; a 30 Hz cap, a GC hitch a
+second and jittery rAF timestamps at 25k shed nothing.
+
 The points now accumulate into a half-float target with the same
 `SRC_ALPHA, ONE` blend, then resolve through the GPU's `fsTonemap`: the
 0.72 knee on the max channel, hue ratios kept, alpha clamped, the same
