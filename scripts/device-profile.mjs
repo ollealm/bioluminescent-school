@@ -90,7 +90,7 @@ try {
     }
     console.log(
       `${report.count} fish · ${report.pixels.join("×")} px · frame ${report.frameMs} ms ` +
-        `(empty submit ${report.emptySubmitMs}, stages sum ${report.sumMs})`,
+        `(js ${report.cpuMs}, empty submit ${report.emptySubmitMs}, stages sum ${report.sumMs})`,
     );
     const rows = Object.entries(report.stagesMs).sort((a, b) => b[1] - a[1]);
     for (const [name, ms] of rows) console.log(`  ${name.padEnd(9)} ${ms.toFixed(2).padStart(6)} ms`);

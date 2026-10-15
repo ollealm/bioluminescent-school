@@ -25,9 +25,10 @@ export interface StageReport {
   pixels: [number, number];
   /** An empty submit's round trip: the meter's floor on this device. */
   emptySubmitMs: number;
-  /** One real frame (update + render), submit to done, as the governor
-   * measures it. */
+  /** One real frame (update + render), start to GPU done. */
   frameMs: number;
+  /** Of frameMs, the JS side: update() and render() until they return. */
+  cpuMs: number;
   /** Per stage, one pass's cost: (median submit − empty submit) / repeat. */
   stagesMs: Record<SimStage | "sprites" | "tonemap" | "readback", number>;
   /** Sum of stagesMs: compare with frameMs − emptySubmitMs. */
@@ -112,12 +113,17 @@ export async function profileStages(
 
   // A real frame, as the governor sees it.
   const frames: number[] = [];
+  const cpu: number[] = [];
   for (let i = 0; i <= samples; i++) {
     const t0 = performance.now();
     system.update(1 / 60);
     renderer.render();
+    const t1 = performance.now();
     await q.onSubmittedWorkDone();
-    if (i > 0) frames.push(performance.now() - t0);
+    if (i > 0) {
+      frames.push(performance.now() - t0);
+      cpu.push(t1 - t0);
+    }
   }
 
   const canvas = renderer.canvasSize();
@@ -128,6 +134,7 @@ export async function profileStages(
     pixels: canvas,
     emptySubmitMs: round(emptySubmitMs),
     frameMs: round(median(frames)),
+    cpuMs: round(median(cpu)),
     stagesMs,
     sumMs: round(Object.values(stagesMs).reduce((a, b) => a + b, 0)),
   };
