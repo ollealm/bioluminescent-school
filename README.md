@@ -70,9 +70,12 @@ the CPU fallback.
   and *Save feel…*.
 - URL parameters: `?feel=<name>` boots a feel (default `olle-work`, the
   shipped one; `site-default` is the v3 state), `?backend=cpu` forces the
-  fallback, `?count=N` overrides the particle count (default 25,000 on
-  desktop, 12,000 on touch devices). A hidden tab stops simulating;
-  `?alive=1` keeps it running for test and agent panes that report hidden
+  fallback, `?count=N` sets the particle count (default 25,000 on
+  desktop, 12,000 on touch devices; the governor still steps it down on
+  a slow device), `?governOff` turns the governor off and pins the count,
+  and `?diag` shows a diagnostics overlay (backend, adapter or fallback
+  reason, fps, particle count). A hidden tab stops simulating;
+  `?alive` keeps it running for test and agent panes that report hidden
   (the filmstrip tool does this for itself).
 
 ## Architecture

@@ -1,4 +1,5 @@
 import { DevPanel } from "./DevPanel";
+import { installDiagnostics, type Diagnostics } from "./diagnostics";
 import { installFeelSwitcher, type FeelSwitcher } from "./feel";
 import { cpuSpec, gpuSpec, makeGovernor, type Governor, type GovernorSpec } from "./governor";
 import type { FilmstripOptions } from "./review";
@@ -21,7 +22,9 @@ import type { Snapshot, SwarmSystem } from "./system";
  *
  * URL overrides for side-by-side comparison during tuning:
  *   ?backend=cpu|gpu   force a backend (gpu also admits a software adapter)
- *   ?count=NNN         initial particle count
+ *   ?count=NNN         initial particle count (still governed)
+ *   ?governOff         turn the adaptive count governor off (pin the count)
+ *   ?diag              diagnostics overlay: backend, adapter, fps, count
  */
 
 interface App {
@@ -57,10 +60,16 @@ let ignoreSelector = ".blm-panel, .blm-toggle";
 const query = new URLSearchParams(location.search);
 const forced = query.get("backend");
 const countOverride = Number(query.get("count")) || 0;
-// ?alive=1 (or window.__keepAlive, which the filmstrip sets while it runs)
+// Flags are bare: ?diag, ?governOff, ?alive.
+const governOff = query.has("governOff");
+const diagnostics: Diagnostics | null =
+  query.has("diag") ? installDiagnostics() : null;
+// Why the last boot didn't get WebGPU, for the diagnostics overlay.
+let cpuReason = "";
+// ?alive (or window.__keepAlive, which the filmstrip sets while it runs)
 // keeps the sim stepping in a hidden tab whose rAF is suspended: test and
 // agent panes report hidden but still need a live school.
-const keepAliveParam = query.get("alive") === "1";
+const keepAliveParam = query.has("alive");
 
 // Count is decided by input type only. Width is a layout fact, not a device
 // fact: a hidden tab, embed or preview pane can report a narrow window at
@@ -94,22 +103,49 @@ async function isFallbackAdapter(adapter: GPUAdapter): Promise<boolean> {
 }
 
 async function detectWebGPU(): Promise<GPUAdapter | null> {
-  if (forced === "cpu") return null;
-  if (!("gpu" in navigator)) return null;
+  if (forced === "cpu") {
+    cpuReason = "forced by ?backend=cpu";
+    return null;
+  }
+  if (!("gpu" in navigator)) {
+    cpuReason = "no WebGPU in this browser";
+    return null;
+  }
   try {
     const adapter = await navigator.gpu.requestAdapter({
       powerPreference: "high-performance",
     });
+    if (!adapter) cpuReason = "no WebGPU adapter";
     if (adapter && forced !== "gpu" && (await isFallbackAdapter(adapter))) {
       console.info(
         "[boot] WebGPU adapter is a software fallback - using the CPU backend (?backend=gpu to force it)",
       );
+      cpuReason = "software WebGPU adapter";
       return null;
     }
     return adapter;
   } catch {
+    cpuReason = "WebGPU adapter request failed";
     return null;
   }
+}
+
+/** The adapter as one short line ("apple · metal-3"), for diagnostics.
+ * `adapter.info` is current; older Chromes only had requestAdapterInfo(). */
+async function describeAdapter(adapter: GPUAdapter): Promise<string> {
+  const a = adapter as GPUAdapter & {
+    requestAdapterInfo?: () => Promise<GPUAdapterInfo>;
+  };
+  let info: GPUAdapterInfo | undefined = a.info;
+  if (!info) {
+    try {
+      info = await a.requestAdapterInfo?.();
+    } catch {
+      /* no info: the row says so */
+    }
+  }
+  if (!info) return "unknown adapter";
+  return [info.vendor, info.architecture || info.description].filter(Boolean).join(" · ") || "unknown adapter";
 }
 
 /**
@@ -129,7 +165,9 @@ async function mountBackend(
   let label = "webgpu";
   let countMax = 100000;
   let count = 0;
+  let detail = "";
 
+  if (!tryGpu) cpuReason = "GPU device lost twice";
   if (tryGpu) {
     const adapter = await detectWebGPU();
     if (adapter) {
@@ -141,8 +179,10 @@ async function mountBackend(
         Object.assign(window as object, { __gpuDevice: gpuApp.device });
         application = gpuApp;
         governorSpec = gpuSpec(gpuApp.device);
+        if (diagnostics) detail = await describeAdapter(adapter);
       } catch (err) {
         console.warn("WebGPU init failed, falling back to CPU:", err);
+        cpuReason = "WebGPU init failed";
       }
     }
   }
@@ -157,11 +197,14 @@ async function mountBackend(
     application = cpuApp;
     governorSpec = cpuSpec(cpuApp);
     label = "cpu·three";
+    detail = cpuReason;
     Object.assign(window as object, { __gpuDevice: undefined });
   }
 
   const { system } = application;
   if (backendTag) backendTag.textContent = `v4 · ${label}`;
+  const gpu = label === "webgpu";
+  diagnostics?.setBackend(gpu ? "gpu · webgpu" : "cpu · three.js", detail, gpu);
 
   const reduceMotion =
     !carry && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -203,9 +246,10 @@ async function mountBackend(
     panel,
     feel,
     // Created after every count-changing step above, so its target is the
-    // count this mount actually settled on. A pinned ?count= is not governed.
+    // count this mount actually settled on (a ?count= is its target).
+    // ?governOff pins the count instead.
     governor:
-      countOverride || !governorSpec ? null : makeGovernor(system, panel, governorSpec),
+      governOff || !governorSpec ? null : makeGovernor(system, panel, governorSpec),
   };
   Object.assign(window as object, { swarm: system });
 
@@ -306,6 +350,8 @@ function body(now: number): void {
   fpsTime += rawMs / 1000;
   if (fpsTime >= 0.5) {
     live.panel.setFps(frames / fpsTime);
+    diagnostics?.setFps(frames / fpsTime);
+    diagnostics?.setCount(live.system.getCount(), live.governor?.target() ?? null);
     frames = 0;
     fpsTime = 0;
   }
