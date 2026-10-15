@@ -208,7 +208,7 @@ takes 0.64 ms at 25,000, 1.14 ms at 50,000 and 2.35 ms at 100,000; the
 render adds ~0.2 ms at 2880×1800. The CPU fallback steps 2,500 fish in
 ~5.7 ms (the v3 reference spent 5.3 ms on 2,600). On phones (Safari,
 2026-10-15, read from the `?diag` overlay): an iPhone 17 Pro on iOS 26
-holds 50,000 at a smooth 60 fps; an iPhone 11 on iOS 26 (the oldest
+holds 50,000 through tapping and settles 100,000 at 80,000, at 60 fps; an iPhone 11 on iOS 26 (the oldest
 iPhone with WebGPU in Safari) runs 30,000 at a clean 60 fps and holds the
 20,000 touch default through heavy tapping; an iPhone 13 Pro on iOS 18's
 flagged WebGPU settles near 16,000. Earlier runs, including the

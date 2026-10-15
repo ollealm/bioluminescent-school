@@ -524,7 +524,10 @@ behind for real, and that shows: 43-55 fps, up to 17% late, meter 65 ms.
 So OVER_SHARE is 1.5 (a GPU keeping up one frame behind reads ~1.1x), and
 the touch default is 20k (iOS 26, so WebGPU in iOS Safari, needs an
 iPhone 11 or newer). Verified on the 11: 20k holds through 10 s of taps
-at 60 fps; 45k sheds to 29k in 4 s, then to 23k under heavy tapping.
+at 60 fps; 45k sheds to 29k in 4 s, then to 23k under heavy tapping
+(intense clicking by hand takes it to 10.5k, seamlessly). The 17 Pro:
+50k holds through taps (meter 8-15 ms), 100k sheds once to 80k and holds
+at 60 fps.
 
 The points now accumulate into a half-float target with the same
 `SRC_ALPHA, ONE` blend, then resolve through the GPU's `fsTonemap`: the
