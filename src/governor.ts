@@ -30,6 +30,18 @@ export interface Governor {
   /** The count the user wants, not the governed-down one. A re-mount
    * carries this, so a fresh device gets a fresh shot at full density. */
   target: () => number;
+  /** What the governor sees, for the diagnostics overlay. */
+  status: () => GovernorStatus;
+}
+
+export interface GovernorStatus {
+  /** The meter's label ("GPU", "sim") and its smoothed reading. */
+  label: string;
+  loadMs: number;
+  /** The meter reading above which the school counts as bound. */
+  boundMs: number;
+  /** One short phrase: what it's doing, or why it isn't shedding. */
+  state: string;
 }
 
 /** A backend's meter and how far the governor may cut its school. */
@@ -115,6 +127,9 @@ export function cpuSpec(app: { setOpacityScale: (k: number) => void }): Governor
 // unreachable: 2,000 CPU fish cost ~4 ms of update() on an M2 Max, so a
 // school shed under a CPU spike never grew back (measured, 2026-10-13).
 const BUDGET_MS = 1000 / 60;
+// How fast on-time frames pay back late time while the school is bound
+// (see tick): sheds when over ~13% of the time is late.
+const REPAY = 0.15;
 
 export function makeGovernor(
   system: SwarmSystem,
@@ -155,7 +170,7 @@ export function makeGovernor(
   };
   // Bumped on a stall so a probe that spans it is discarded on landing.
   let probeEpoch = 0;
-  let over = 0; // seconds of late, bound frames
+  let over = 0; // seconds of late, bound frames, net of slow repayment
   let under = 0; // seconds of headroom
   let warmup = 5;
   // Step history for the oscillation guard: after down → up → down within
@@ -283,7 +298,13 @@ export function makeGovernor(
       over += dtS;
       under = 0;
     } else {
-      over = Math.max(0, over - dtS);
+      // An on-time frame pays late time back at REPAY while the school is
+      // bound, in full when it isn't. Repaying 1:1 meant a steady 50 fps
+      // (every fifth frame doubled: visible stutter, a third of the time
+      // late) never added up to anything, so a phone stuttering at 25k
+      // never shed (iPhone 13 Pro, 2026-10-15). Now a bound school sheds
+      // once more than REPAY / (1 + REPAY) of its time is late.
+      over = Math.max(0, over - dtS * (bound ? REPAY : 1));
       // Headroom: this frame's work would fit well inside the budget,
       // whatever the cadence (a throttled display still has room).
       under = loadMs < spec.headroomShare * BUDGET_MS ? under + dtS : 0;
@@ -302,9 +323,35 @@ export function makeGovernor(
       );
     }
   };
+  const boundMs = spec.boundShare * BUDGET_MS;
   return {
     tick,
     // A slider move since the last tick is the new target already.
     target: () => (system.getCount() !== governed ? system.getCount() : target),
+    status: () => ({
+      label,
+      loadMs,
+      boundMs,
+      state:
+        warmup > 0
+          ? "warming up"
+          : verify
+            ? "checking last step"
+            : shedBlocked
+              ? "holding: fewer fish didn't help"
+              : over > 0.1
+                ? governed > floor
+                  ? `late ${over.toFixed(1)} of 2 s`
+                  : "at floor"
+                : loadMs > boundMs
+                  ? "bound, on time"
+                  : sticky
+                    ? "holding: oscillated"
+                    : governed < target
+                      ? under > 1
+                        ? `headroom ${under.toFixed(0)} of 20 s`
+                        : "stepped down"
+                      : "idle",
+    }),
   };
 }

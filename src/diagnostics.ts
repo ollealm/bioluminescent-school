@@ -1,8 +1,12 @@
+import type { GovernorStatus } from "./governor";
+
 /**
  * ?diag: a small read-only overlay for testing on real devices (older
  * phones, laptops without WebGPU) where the console is out of reach. It
- * shows which backend booted and why, the frame rate, and the particle
- * count against the count the governor is defending.
+ * shows which backend booted and why, the frame rate and how many frames
+ * came in late (an average fps hides stutter: 50 fps can be every fifth
+ * frame doubled), the particle count against the count the governor is
+ * defending, and what the governor sees.
  *
  * Styled after the olle.work document (thin border in the UI's main color,
  * transparent, the page's own font) and reads the site's --ui-main /
@@ -32,9 +36,13 @@ export interface Diagnostics {
   /** The backend that booted ("webgpu", "cpu · three") and a detail line:
    * the adapter for WebGPU, the reason for a CPU fallback. */
   setBackend: (backend: string, detail: string, gpu: boolean) => void;
-  setFps: (fps: number) => void;
+  /** Frame rate, share of frames late, and the worst frame (ms), over
+   * the last half second. */
+  setFrames: (fps: number, lateShare: number, worstMs: number) => void;
   /** Live count, and the governor's target (null: not governed). */
   setCount: (count: number, target: number | null) => void;
+  /** The governor's view (null: ?governOff). */
+  setGovernor: (status: GovernorStatus | null) => void;
 }
 
 export function installDiagnostics(): Diagnostics {
@@ -58,7 +66,10 @@ export function installDiagnostics(): Diagnostics {
   const [, backendEl] = row("backend");
   const [detailLabel, detailEl] = row("adapter");
   const [, fpsEl] = row("fps");
+  const [, lateEl] = row("late");
   const [, countEl] = row("particles");
+  const [meterLabel, meterEl] = row("gpu");
+  const [, governorEl] = row("governor");
   document.body.appendChild(root);
 
   const fmt = (n: number): string => n.toLocaleString("en-US");
@@ -69,8 +80,9 @@ export function installDiagnostics(): Diagnostics {
       detailLabel.textContent = gpu ? "adapter" : "fallback";
       detailEl.textContent = detail || "—";
     },
-    setFps: (fps) => {
+    setFrames: (fps, lateShare, worstMs) => {
       fpsEl.textContent = String(Math.round(fps));
+      lateEl.textContent = `${Math.round(lateShare * 100)}% · worst ${Math.round(worstMs)} ms`;
     },
     setCount: (count, target) => {
       countEl.textContent =
@@ -79,6 +91,15 @@ export function installDiagnostics(): Diagnostics {
           : count < target
             ? `${fmt(count)} of ${fmt(target)}`
             : fmt(count);
+    },
+    setGovernor: (status) => {
+      if (!status) {
+        governorEl.textContent = "off";
+        return;
+      }
+      meterLabel.textContent = status.label.toLowerCase();
+      meterEl.textContent = `${status.loadMs.toFixed(1)} ms (bound > ${status.boundMs.toFixed(1)})`;
+      governorEl.textContent = status.state;
     },
   };
 }

@@ -332,6 +332,11 @@ let last = performance.now();
 let lastRaf = 0;
 let frames = 0;
 let fpsTime = 0;
+// For the diagnostics' late-frame share: the fastest frame seen stands for
+// the display period, and a frame over 1.5 periods missed a vsync.
+let fastestMs = Infinity;
+let lateFrames = 0;
+let worstMs = 0;
 
 function body(now: number): void {
   const rawMs = now - last;
@@ -346,14 +351,22 @@ function body(now: number): void {
   live.governor?.tick(rawMs, updateMs);
 
   frames++;
+  if (rawMs > 4) fastestMs = Math.min(fastestMs, rawMs);
+  if (rawMs > fastestMs * 1.5) lateFrames++;
+  worstMs = Math.max(worstMs, rawMs);
   // Wall time, not the clamped sim dt: under 20 fps the clamp read as 20.
   fpsTime += rawMs / 1000;
   if (fpsTime >= 0.5) {
     live.panel.setFps(frames / fpsTime);
-    diagnostics?.setFps(frames / fpsTime);
-    diagnostics?.setCount(live.system.getCount(), live.governor?.target() ?? null);
+    if (diagnostics) {
+      diagnostics.setFrames(frames / fpsTime, lateFrames / frames, worstMs);
+      diagnostics.setCount(live.system.getCount(), live.governor?.target() ?? null);
+      diagnostics.setGovernor(live.governor?.status() ?? null);
+    }
     frames = 0;
     fpsTime = 0;
+    lateFrames = 0;
+    worstMs = 0;
   }
 }
 
