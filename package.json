@@ -1,7 +1,7 @@
 {
   "name": "bioluminescent-school",
   "private": true,
-  "version": "4.1.8",
+  "version": "4.1.9",
   "description": "A school of 25,000 bioluminescent particles simulated in WebGPU compute, with a CPU fallback",
   "license": "MIT",
   "repository": "github:ollealm/bioluminescent-school",

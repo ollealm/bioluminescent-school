@@ -473,9 +473,15 @@ not to show. Growing back stays as it was (rarely, on a phone): a visit
 is short. 3x phones now render at 2x (`?dpr=3` to compare): the earlier
 "2x reads soft" that set 3x (78ae36e) turned out to be something else,
 and on the 13 Pro 2x and 3x look and run the same. So the phone's GPU
-time is per-fish work (sim, grids, reductions), not fill: 18.9 ms at 20k
-there against 0.64 ms for the whole step at 25k on the M2 Max, a wider
-gap than the GPUs alone explain and the next thing to profile.
+time is per-fish work (sim, grids, reductions), not fill. Per fish, on
+the governor's meter (submit-to-done, so above the step time: the M2 Max
+reads 3.5 ms at 25k against a 0.64 ms step), an iPhone 17 Pro on iOS 26
+reads 14.9 ms at 40k (2.7x the Mac per fish) and the 13 Pro on iOS 18's
+flagged WebGPU 18.9 ms at 20k (6.7x): hardware-sized gaps, no phone
+anomaly. The 17 Pro holds 50k smooth; hard tapping sheds it to 40k. That
+run also showed the "fewer fish didn't help" block misfiring on taps
+(cascades are the school's own, bursty load), so it now pauses shedding
+for 30 s (doubling each time) instead of for the session.
 
 The points now accumulate into a half-float target with the same
 `SRC_ALPHA, ONE` blend, then resolve through the GPU's `fsTonemap`: the

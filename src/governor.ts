@@ -262,9 +262,15 @@ export function makeGovernor(
   // fixed costs like the tonemap pass don't shrink with the count). If it
   // doesn't, the load isn't the school's (a busy main thread delaying the
   // probe, another app on the GPU) and cutting more fish won't help, so
-  // step-downs stop until the slider moves.
+  // step-downs pause: 30 s, doubling each time it happens again. Not for
+  // the session: load the school makes in bursts reads the same way (taps
+  // light cascades, so a step judged mid-tapping "didn't help"), and a
+  // phone that later heats up must still be able to shed (iPhone 17 Pro,
+  // 2026-10-15). Doubling keeps a load that really isn't the school's
+  // from bleeding it to the floor a step at a time.
   let verify: { at: number; before: number; cut: number } | null = null;
-  let shedBlocked = false;
+  let blockedUntil = -Infinity;
+  let blockMs = 30_000;
 
   const record = (ms: number): void => {
     // Clamped so one outlier (a GC pause, a deferred completion) can't
@@ -339,7 +345,8 @@ export function makeGovernor(
       steps.length = 0;
       sticky = false;
       verify = null;
-      shedBlocked = false;
+      blockedUntil = -Infinity;
+      blockMs = 30_000;
       since = now + SETTLE_MS;
       spec.onCount?.(governed, target);
       return;
@@ -348,7 +355,8 @@ export function makeGovernor(
       if (now < verify.at) return;
       const after = medianSince(since);
       if (after.n > 0 && after.median > verify.before * (1 - 0.25 * verify.cut)) {
-        shedBlocked = true;
+        blockedUntil = now + blockMs;
+        blockMs *= 2;
         console.info(
           `[governor] fewer fish didn't lower ${label} time (${verify.before.toFixed(1)} → ${after.median.toFixed(1)} ms) — holding ${governed}`,
         );
@@ -381,7 +389,7 @@ export function makeGovernor(
       const bound = meter.n > 0 && meter.median > spec.boundShare * budget;
       const overloaded = meter.n >= 10 && meter.median > OVER_SHARE * budget;
       const stutter = lateShare > LATE_SHARE && spread && bound;
-      if ((stutter || overloaded) && governed > floor && !shedBlocked) {
+      if ((stutter || overloaded) && governed > floor && now >= blockedUntil) {
         step(
           -1,
           Math.max(floor, Math.round((governed * STEP_DOWN) / quantum) * quantum),
@@ -421,8 +429,8 @@ export function makeGovernor(
           ? "warming up"
           : verify
             ? "checking last step"
-            : shedBlocked
-              ? "holding: fewer fish didn't help"
+            : performance.now() < blockedUntil
+              ? `paused: fewer fish didn't help (${Math.ceil((blockedUntil - performance.now()) / 1000)} s)`
               : lateShare > LATE_SHARE && governed <= floor
                 ? "at floor"
                 : sticky
