@@ -1,6 +1,7 @@
 import { GPU_TUNING, PALETTES, STYLE_IDS } from "../params";
 import type { GpuSwarm } from "./GpuSwarm";
 import { WGSL_SPRITES, WGSL_TONEMAP } from "./wgsl-render";
+import { FINE_CELLS } from "./wgsl-sim";
 
 /**
  * Renders the swarm straight out of the sim's storage buffers — zero
@@ -221,6 +222,8 @@ export class GpuRenderer {
     R[32] = this.nRef;
     R[33] = P.crowdDim ?? 0;
     R[34] = P.flashSize ?? 0.45;
+    // Hashed fine grid: other cells' fish sharing the 27 buckets, on average.
+    R[35] = (27 * sys.getCount()) / FINE_CELLS;
     this.device.queue.writeBuffer(this.uniformsB, 0, R);
 
     const enc = this.device.createCommandEncoder({ label: "render" });

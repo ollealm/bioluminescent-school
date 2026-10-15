@@ -186,10 +186,22 @@ export const GPU_TUNING = {
    * they crossed x ≈ ±14.4, on screen at 16:9 (visible to ±13.5·aspect).
    * x ±32.4 covers aspects to ~2.4:1, y ±21.6 covers portrait phones and
    * wanderers (farR ≈ 2.1 × containRadius), and z keeps ±14.4 for roamDepth
-   * 1 and sheet 0. The total must be a multiple of 256 (the scan block).
+   * 1 and sheet 0. The CPU engine keeps this dense grid; the GPU hashes
+   * its cells instead (fineBuckets).
    */
   fineGridDims: [144, 96, 64] as const,
   fineCellSize: 0.45,
+  /**
+   * The GPU's collision grid is hashed: each cell's coordinates hash into
+   * one of this many buckets (a power of two, a multiple of the 256-cell
+   * scan block). The dense 144×96×64 grid cost the same to clear and scan
+   * at 1,000 fish as at 100,000: 3.5 ms a frame on an iPhone 11, a third
+   * of its frame at 12k (2026-10-15). Cells that share a bucket are told
+   * apart by each fish's own cell (the pair push) or corrected for on
+   * average (crowd dim), and a fish anywhere hashes to its true cell, so
+   * nothing piles up in an edge cell any more.
+   */
+  fineBuckets: 131072,
   /**
    * The hunter wedge: at speed the danger zone would elongate along the
    * heading (wedgeAhead×) and taper at the flanks (wedgeSide×), relaxing to

@@ -14,7 +14,8 @@
  *   b      size (density-compensated), opacity (compensated), flashBright, twinkle
  *   c      stretch, motionGlow, style, tonemapKnee
  *   flash  flash color rgb, camera z
- *   crowd  nRef (expected 27-fine-cell count at the school's live mean density), crowdDim, flashSize, 0
+ *   crowd  nRef (expected 27-fine-cell count at the school's live mean density), crowdDim, flashSize,
+ *          foreign (expected fish from other cells in 27 hashed buckets: 27 · count / buckets)
  */
 // The sim's fine-grid geometry, so crowd dim indexes the same cells.
 import { WGSL_FINE_GRID } from "./wgsl-sim";
@@ -120,24 +121,22 @@ fn vsSprite(
   // slab leaving the stencil and the one entering it both sit at |d| = 1.5
   // (w = 0), so the weighted mean is continuous. Normalizing by sum(w) and
   // scaling by 27 keeps the old meaning (expected fish in 27 cells), so the
-  // host's nRef stays valid. Off-grid cells get w = 0 (excluded from both
-  // sums); sum(w) >= (1 - 0.5/1.5)^3 from the own cell alone. Cost per
-  // vertex is the same 27 cells x 2 reads as before plus a few ALU ops.
+  // host's nRef stays valid. The grid is hashed: a bucket also holds, on
+  // average, count / buckets fish from other cells, which R.crowd.w takes
+  // back out (27x that). Cost per vertex is 27 cells x 2 reads plus a few
+  // ALU ops.
   var crowdFade = 1.0;
   let crowdDim = R.crowd.y;
   if (crowdDim > 0.0) {
     let fc = fineCoord(pos);
-    // Fractional position inside the own cell, [0, 1] (clamped so a fish
-    // outside the grid, pinned to an edge cell by fineCoord, stays sane).
-    let gpos = pos * FINE_INV + vec3f(FINE_DIM / 2);
-    let fr = clamp(gpos - vec3f(fc), vec3f(0.0), vec3f(1.0));
+    // Fractional position inside the own cell, [0, 1].
+    let fr = clamp(pos * FINE_INV - vec3f(fc), vec3f(0.0), vec3f(1.0));
     var wSum = 0.0;
     var nSum = 0.0;
     for (var oz = -1; oz <= 1; oz++) {
       for (var oy = -1; oy <= 1; oy++) {
         for (var ox = -1; ox <= 1; ox++) {
           let g = fc + vec3i(ox, oy, oz);
-          if (!fineInGrid(g)) { continue; }
           let off = vec3f(f32(ox), f32(oy), f32(oz)) + 0.5 - fr;
           let t = max(vec3f(0.0), vec3f(1.0) - abs(off) / 1.5);
           let w = t.x * t.y * t.z;
@@ -147,7 +146,7 @@ fn vsSprite(
         }
       }
     }
-    let nLocal = nSum / max(wSum, 1e-6) * 27.0;
+    let nLocal = max(0.0, nSum / max(wSum, 1e-6) * 27.0 - R.crowd.w);
     crowdFade = pow(clamp(R.crowd.x / max(nLocal, 1.0), 0.0, 1.0), 0.8 * crowdDim);
   }
 

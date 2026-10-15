@@ -495,6 +495,25 @@ stays: the 11 sits just under its 16.7 ms budget there. The median-period
 fix (v4.1.10) came out of the same phone: under tapping its 10th-percentile
 period read 9 ms and shed it to the 8,000 floor.
 
+**The collision grid is hashed** (2026-10-15). `__stages()` (per-stage GPU
+timing on the device, driven over a cable by `scripts/device-profile.mjs`)
+found the iPhone 11's fixed cost: the fine grid's scan, 3.5 ms a frame at
+any count, because the dense 144×96×64 grid (884,736 cells) was cleared
+and scanned whole every frame. Its real frame was 10-13 ms at 1-20k, JS
+~1 ms. The GPU fine grid now hashes cell coordinates into
+`GPU_TUNING.fineBuckets` (131,072) buckets: the pair push skips entries
+whose own cell isn't the one being visited (in range, they push once, from
+their own), and crowd dim subtracts the expected other-cell fish
+(27 · count / buckets) from its 27-bucket sum. Fish no longer clamp into
+edge cells. On the M2 Max the scan went 0.28 → 0.08 ms; acceptance probes
+over 6 runs sit inside the old code's 4-run spread (fountain median −0.30
+vs −0.22, vacancy medians 25 vs 2 with both ranging 0 to ~100-190: that
+probe swings that much run to run on either). The CPU engine keeps its
+dense grid. The same run showed why the in-page meter reads ~1 frame on
+iPhones whatever the load: a 1,000-fish frame took longer than a
+12,000-fish one (13 vs 10 ms), the signature of the GPU clocking down
+when lightly loaded.
+
 The points now accumulate into a half-float target with the same
 `SRC_ALPHA, ONE` blend, then resolve through the GPU's `fsTonemap`: the
 0.72 knee on the max channel, hue ratios kept, alpha clamped, the same

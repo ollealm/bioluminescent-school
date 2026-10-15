@@ -45,9 +45,9 @@ export const U_VEC4S = 22;
 
 const D = TUNING.gridDim;
 
-const [FINE_X, FINE_Y, FINE_Z] = GPU_TUNING.fineGridDims;
-/** Cells in the fine collision grid. */
-export const FINE_CELLS = FINE_X * FINE_Y * FINE_Z;
+/** Buckets in the fine collision grid (hashed cells; see GPU_TUNING.fineBuckets). */
+export const FINE_CELLS = GPU_TUNING.fineBuckets;
+if ((FINE_CELLS & (FINE_CELLS - 1)) !== 0) throw new Error("fineBuckets must be a power of two");
 const CELLS_JS = D * D * D;
 
 /**
@@ -56,23 +56,25 @@ const CELLS_JS = D * D * D;
  * stay one definition.
  */
 export const WGSL_FINE_GRID = /* wgsl */ `
-const FINE_DIM: vec3i = vec3i(${FINE_X}, ${FINE_Y}, ${FINE_Z});
-const FINE_CELLS: u32 = ${FINE_CELLS}u;
+const FINE_CELLS: u32 = ${FINE_CELLS}u; // hash buckets
 const FINE_INV: f32 = ${1 / GPU_TUNING.fineCellSize};
 const FINE_CELL_SZ: f32 = ${GPU_TUNING.fineCellSize};
 
-// Cell coordinates, centered on the origin. A fish outside the grid is
-// clamped into an edge cell.
+// Cell coordinates, unbounded: the grid is hashed, so every fish is in its
+// true cell wherever it swims.
 fn fineCoord(p: vec3f) -> vec3i {
-  return clamp(vec3i(floor(p * FINE_INV)) + FINE_DIM / 2, vec3i(0), FINE_DIM - 1);
+  return vec3i(floor(p * FINE_INV));
 }
 
-fn fineInGrid(c: vec3i) -> bool {
-  return all(c >= vec3i(0)) && all(c < FINE_DIM);
-}
-
+// A cell's bucket. Cells can share one: readers check an entry's own cell
+// (fineCoord of its position) or correct for sharing on average.
 fn fineIndex(c: vec3i) -> u32 {
-  return u32(c.x) + u32(c.y) * u32(FINE_DIM.x) + u32(c.z) * u32(FINE_DIM.x * FINE_DIM.y);
+  var h = (bitcast<u32>(c.x) * 0x8da6b343u) ^ (bitcast<u32>(c.y) * 0xd8163841u)
+    ^ (bitcast<u32>(c.z) * 0xcb1ab31fu);
+  h ^= h >> 16u;
+  h *= 0x7feb352du;
+  h ^= h >> 15u;
+  return h & (FINE_CELLS - 1u);
 }
 `;
 
@@ -302,7 +304,7 @@ fn scanReduce(
 }
 
 // Dispatched with 2 workgroups: 0 = coarse, 1 = fine. Each lane owns a
-// contiguous run of block sums (fine: ~4-11, coarse: <1).
+// contiguous run of block sums (fine: 2, coarse: <1).
 @compute @workgroup_size(256)
 fn scanBlocks(
   @builtin(local_invocation_index) lid: u32,
@@ -968,16 +970,19 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
       for (var oy = -1; oy <= 1; oy++) {
         for (var ox = -1; ox <= 1; ox++) {
           let g = fc + vec3i(ox, oy, oz);
-          if (!fineInGrid(g)) { continue; }
           let fcell = fineIndex(g);
           let fs = gridData[FS_OFF + fcell];
           let fcnt = gridData[FS_OFF + fcell + 1u] - fs;
           for (var k = 0u; k < fcnt; k++) {
             let j = gridData[feOff + fs + k];
             if (j == i) { continue; }
-            let d3 = dynIn[j].pe.xyz - pos;
+            let pj = dynIn[j].pe.xyz;
+            let d3 = pj - pos;
             let d2 = dot(d3, d3);
             if (d2 >= range2) { continue; }
+            // A fish from another cell that shares this bucket: in range, it
+            // is in one of the 27 cells and pushes once, from its own.
+            if (any(fineCoord(pj) != g)) { continue; }
             let dist = max(sqrt(d2), 1e-4);
             hardPush -= (d3 / dist) * ((1.0 - dist / range) * PAIR_PUSH);
           }
