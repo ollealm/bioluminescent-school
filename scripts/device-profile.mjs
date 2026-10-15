@@ -12,6 +12,10 @@
  *   node scripts/device-profile.mjs [--url https://olle.work] [--counts 1000,12000]
  *                                   [--udid <id>] [--repeat 10] [--samples 7]
  *
+ * --watch <seconds> instead loads each count governed and prints the ?diag
+ * overlay every 2 s (fps, late frames, count, meter, governor state);
+ * --taps <from>-<to> taps the screen every 250 ms in that window (seconds).
+ *
  * The page must be served over HTTPS (WebGPU needs a secure context) and
  * carry this repo's __stages(). `xcrun devicectl list devices` lists UDIDs;
  * without --udid safaridriver picks the connected device.
@@ -28,6 +32,10 @@ const base = args.url ?? "https://olle.work";
 const counts = (args.counts ?? "1000,12000").split(",").map(Number);
 const repeat = Number(args.repeat ?? 10);
 const samples = Number(args.samples ?? 7);
+const watch = Number(args.watch ?? 0);
+const [tapFrom, tapTo] = (args.taps ?? "").split("-").map(Number);
+// Extra query for --watch runs, e.g. --query governOff.
+const extra = args.query ? `&${args.query}` : "";
 const PORT = 4723;
 const wd = `http://localhost:${PORT}`;
 
@@ -94,6 +102,10 @@ try {
   await call("POST", s("/timeouts"), { script: 180_000, pageLoad: 60_000 });
   const ua = await call("POST", s("/execute/sync"), { script: "return navigator.userAgent", args: [] });
   console.log(`device: ${ua}\n`);
+  if (watch > 0) {
+    for (const count of counts) await watchCount(count);
+    counts.length = 0;
+  }
   for (const count of counts) {
     // governOff: the count stays put while we measure.
     await call("POST", s("/url"), { url: `${base}/?count=${count}&governOff&diag` });
@@ -141,5 +153,59 @@ try {
   }
 } finally {
   await call("DELETE", s("")).catch(() => {});
+}
+
+/** Load `count` governed and log the ?diag overlay every 2 s. */
+async function watchCount(count) {
+  await call("POST", s("/url"), { url: `${base}/?count=${count}&diag${extra}` });
+  await call("POST", s("/execute/async"), {
+    script: `const done = arguments[arguments.length - 1];
+      navigator.wakeLock?.request("screen").catch(() => {});
+      (function wait() { window.swarm ? done() : setTimeout(wait, 250); })();`,
+    args: [],
+  });
+  console.log(`--- ${count} fish${extra}, ${watch} s${tapFrom >= 0 ? `, taps ${tapFrom}-${tapTo} s` : ""}`);
+  const rect = await call("POST", s("/execute/sync"), {
+    script: "return [innerWidth, innerHeight]",
+    args: [],
+  });
+  const t0 = Date.now();
+  let nextLog = 0;
+  while (Date.now() - t0 < watch * 1000) {
+    const t = (Date.now() - t0) / 1000;
+    if (t >= tapFrom && t < tapTo) {
+      const x = Math.round(rect[0] * (0.2 + 0.6 * Math.random()));
+      const y = Math.round(rect[1] * (0.2 + 0.6 * Math.random()));
+      await call("POST", s("/actions"), {
+        actions: [
+          {
+            type: "pointer",
+            id: "finger",
+            parameters: { pointerType: "touch" },
+            actions: [
+              { type: "pointerMove", duration: 0, x, y, origin: "viewport" },
+              { type: "pointerDown", button: 0 },
+              { type: "pause", duration: 40 },
+              { type: "pointerUp", button: 0 },
+            ],
+          },
+        ],
+      }).catch((e) => console.log("tap failed:", String(e).slice(0, 120)));
+    }
+    if (t >= nextLog) {
+      nextLog += 2;
+      const rows = await call("POST", s("/execute/sync"), {
+        script: `const t = document.querySelector(".blm-diag")?.innerText.split("\\n") ?? [];
+          const o = {}; for (let i = 0; i + 1 < t.length; i += 2) o[t[i]] = t[i + 1]; return o;`,
+        args: [],
+      });
+      console.log(
+        `${t.toFixed(0).padStart(3)} s  fps ${rows.fps}  late ${rows.late}  ${rows.particles}  ` +
+          `gpu ${rows.gpu}  ${rows.governor}`,
+      );
+    }
+    await sleep(250);
+  }
+  console.log();
 }
 process.exit(0);

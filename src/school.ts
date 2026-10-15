@@ -84,7 +84,9 @@ const keepAliveParam = query.has("alive");
 // fact: a hidden tab, embed or preview pane can report a narrow window at
 // boot, and the school would stay pinned at the phone count forever.
 const coarsePointer = window.matchMedia("(pointer: coarse)").matches;
-const GPU_COUNT = coarsePointer ? 12000 : 25000;
+// Touch: 20k. WebGPU in iOS Safari needs iOS 26, so an iPhone 11 at least,
+// and an iPhone 11 runs 30k at a clean 60 fps (2026-10-15).
+const GPU_COUNT = coarsePointer ? 20000 : 25000;
 const CPU_COUNT = coarsePointer ? 2200 : 4000;
 
 let live: Mounted | null = null;

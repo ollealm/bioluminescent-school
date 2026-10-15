@@ -150,12 +150,17 @@ const LATE_SHARE = 0.04;
 // frames queued behind each other, so it overstates per-frame work.
 const STEP_DOWN = 0.8;
 // Overloaded: the meter's median over the window exceeds this share of the
-// budget, so the school can't finish a frame per vsync whatever rAF says.
-// An iPhone 13 Pro at 20k read 60 fps, 0% late, GPU 18.9 ms of a 16.7 ms
-// period, and visibly stuttered: Safari doesn't hold rAF back for the GPU,
-// so the drops happen at presentation. The Mac agrees from the other side:
-// 200k read 14 ms against 8.3 and stuttered, 160k read 6.5 and ran clean.
-const OVER_SHARE = 1;
+// budget, so the GPU has fallen behind whatever rAF says. Not 1: the meter
+// is submit-to-done, and a GPU keeping up one frame behind reads just over
+// a period. An iPhone 11 on iOS 26 read 16-19.6 ms of 16.7 at 8k, 20k and
+// 30k alike (60 fps, no late frames; iOS clocks the GPU down to fit the
+// frame), so at 1 it shed to the floor within 8 s; at 45k, really behind,
+// it read 65 ms with frames late. The Mac's stutter read 1.7x (200k: 14
+// of 8.3 ms; 160k: 6.5, clean). The case 1 was set for, an iPhone 13 Pro
+// on iOS 18's flagged WebGPU dropping frames at 18.9 ms (1.13x) unseen by
+// rAF, no longer sheds on the meter alone: that's an opt-in flag build,
+// and iOS 26 shows real overload in rAF.
+const OVER_SHARE = 1.5;
 const STEP_UP = 1.15;
 // Decisions look at a trailing window this long, never reaching back
 // across the last step (plus SETTLE_MS for the resize to land) or stall.
