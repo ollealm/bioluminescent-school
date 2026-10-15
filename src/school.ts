@@ -253,9 +253,8 @@ async function mountBackend(
     feel,
     // Created after every count-changing step above, so its target is the
     // count this mount actually settled on (a ?count= is its target).
-    // ?governOff pins the count instead.
-    governor:
-      governOff || !governorSpec ? null : makeGovernor(system, panel, governorSpec),
+    // ?governOff pins the count: the governor only measures, for ?diag.
+    governor: governorSpec ? makeGovernor(system, panel, governorSpec, governOff) : null,
   };
   Object.assign(window as object, { swarm: system });
 
@@ -368,7 +367,11 @@ function body(now: number): void {
     if (diagnostics) {
       const late = pacer.lateSince(now - fpsTime * 1000, pacer.periodMs * 1.5);
       diagnostics.setFrames(frames / fpsTime, late.share, worstMs);
-      diagnostics.setCount(live.system.getCount(), live.governor?.target() ?? null);
+      const governor = live.governor;
+      diagnostics.setCount(
+        live.system.getCount(),
+        governor && !governor.observeOnly ? governor.target() : null,
+      );
       diagnostics.setGovernor(live.governor?.status() ?? null);
     }
     frames = 0;

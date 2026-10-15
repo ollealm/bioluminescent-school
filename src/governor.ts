@@ -36,6 +36,8 @@ export interface Governor {
   target: () => number;
   /** What the governor sees, for the diagnostics overlay. */
   status: () => GovernorStatus;
+  /** Measures but never changes the count (?governOff). */
+  observeOnly: boolean;
 }
 
 export interface GovernorStatus {
@@ -218,6 +220,8 @@ export function makeGovernor(
   system: SwarmSystem,
   panel: Pick<DevPanel, "refresh">,
   spec: GovernorSpec,
+  // ?governOff: keep the meter and the frame stats for ?diag, never step.
+  observeOnly = false,
 ): Governor {
   const { floor, quantum, label } = spec;
   let target = system.getCount(); // what the user wants
@@ -296,6 +300,7 @@ export function makeGovernor(
   };
 
   const step = (dir: -1 | 1, count: number, why: string, meterMs: number): void => {
+    if (observeOnly) return;
     const now = performance.now();
     since = now + SETTLE_MS;
     verify =
@@ -419,6 +424,7 @@ export function makeGovernor(
 
   return {
     tick,
+    observeOnly,
     // A slider move since the last tick is the new target already.
     target: () => (system.getCount() !== governed ? system.getCount() : target),
     status: () => ({
@@ -427,22 +433,23 @@ export function makeGovernor(
       lateShare,
       boundMs: spec.boundShare * budgetMs(),
       budgetMs: budgetMs(),
-      state:
-        warmup > 0
-          ? "warming up"
-          : verify
-            ? "checking last step"
-            : performance.now() < blockedUntil
-              ? `paused: fewer fish didn't help (${Math.ceil((blockedUntil - performance.now()) / 1000)} s)`
-              : lateShare > LATE_SHARE && governed <= floor
-                ? "at floor"
-                : sticky
-                  ? "holding: oscillated"
-                  : governed < target
-                    ? under > 1
-                      ? `headroom ${under.toFixed(0)} of ${HEADROOM_S} s`
-                      : "stepped down"
-                    : "idle",
+      state: observeOnly
+        ? "off (measuring only)"
+          : warmup > 0
+            ? "warming up"
+            : verify
+              ? "checking last step"
+              : performance.now() < blockedUntil
+                ? `paused: fewer fish didn't help (${Math.ceil((blockedUntil - performance.now()) / 1000)} s)`
+                : lateShare > LATE_SHARE && governed <= floor
+                  ? "at floor"
+                  : sticky
+                    ? "holding: oscillated"
+                    : governed < target
+                      ? under > 1
+                        ? `headroom ${under.toFixed(0)} of ${HEADROOM_S} s`
+                        : "stepped down"
+                      : "idle",
     }),
   };
 }
