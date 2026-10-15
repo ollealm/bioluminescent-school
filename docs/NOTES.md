@@ -482,6 +482,18 @@ anomaly. The 17 Pro holds 50k smooth; hard tapping sheds it to 40k. That
 run also showed the "fewer fish didn't help" block misfiring on taps
 (cascades are the school's own, bursty load), so it now pauses shedding
 for 30 s (doubling each time) instead of for the session.
+The 1,000-fish check (`?diag&count=1000`, below the floor so nothing
+steps) split the phones: the 17 Pro reads 4.3 ms there and 14.9 ms at 40k
+(~0.27 ms per 1,000 fish), so its meter measures real work; the iPhone 11
+reads 13.8 ms at 1,000 and ~15.5 ms at 9.5-12k (~0.15 ms per 1,000), so
+~14 ms of its frame is fixed cost and shedding can't help it, which is what
+its "fewer fish didn't help" pauses said. Some of that is the meter's own
+latency (the Mac reads 3.5 ms at 25k against a 0.64 ms step), some fixed
+per-frame work (the passes, grid clears and scans, the readback); telling
+them apart needs per-stage timing on the device. The 12k touch default
+stays: the 11 sits just under its 16.7 ms budget there. The median-period
+fix (v4.1.10) came out of the same phone: under tapping its 10th-percentile
+period read 9 ms and shed it to the 8,000 floor.
 
 The points now accumulate into a half-float target with the same
 `SRC_ALPHA, ONE` blend, then resolve through the GPU's `fsTonemap`: the

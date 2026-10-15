@@ -203,7 +203,12 @@ not to the engine.
 Perf on Apple silicon (M2 Max, Chrome, 2026-10-13): a simulation step
 takes 0.64 ms at 25,000, 1.14 ms at 50,000 and 2.35 ms at 100,000; the
 render adds ~0.2 ms at 2880×1800. The CPU fallback steps 2,500 fish in
-~5.7 ms (the v3 reference spent 5.3 ms on 2,600). Earlier runs, including the
+~5.7 ms (the v3 reference spent 5.3 ms on 2,600). On phones (Safari,
+2026-10-15, read from the `?diag` overlay): an iPhone 17 Pro on iOS 26
+holds 50,000 at a smooth 60 fps; an iPhone 11 on iOS 26 holds the 12,000
+touch default, where ~14 ms of each frame is fixed cost (it reads 13.8 ms
+at 1,000 fish), so fewer fish buy it little; an iPhone 13 Pro on iOS 18's
+flagged WebGPU settles near 16,000. Earlier runs, including the
 original 50,000-particle acceptance table, are in
 [`docs/NOTES.md`](docs/NOTES.md#4-measurements).
 
