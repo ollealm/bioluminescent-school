@@ -258,6 +258,37 @@ export class GpuRenderer {
     this.device.queue.submit([enc.finish()]);
   }
 
+  canvasSize(): [number, number] {
+    return [this.canvas.width, this.canvas.height];
+  }
+
+  /** Profiling only (src/gpu/profile.ts): one render pass, `k` times, with
+   * the uniforms the last render() wrote. The tonemap draws into the
+   * canvas's current texture; the next frame overwrites it. */
+  encodePass(enc: GPUCommandEncoder, pass: "sprites" | "tonemap", k: number): void {
+    if (!this.hdr) return;
+    this.syncSpriteGroups();
+    const sys = this.system;
+    const view = pass === "sprites" ? this.hdrView : this.context.getCurrentTexture().createView();
+    for (let i = 0; i < k; i++) {
+      const rp = enc.beginRenderPass({
+        colorAttachments: [
+          { view, clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: "clear", storeOp: "store" },
+        ],
+      });
+      if (pass === "sprites") {
+        rp.setPipeline(this.spritePipeline);
+        rp.setBindGroup(0, this.spriteGroups![sys.currentParity()]);
+        rp.draw(4, sys.getCount());
+      } else {
+        rp.setPipeline(this.tonemapPipeline);
+        rp.setBindGroup(0, this.tonemapGroup);
+        rp.draw(3);
+      }
+      rp.end();
+    }
+  }
+
   dispose(): void {
     this.hdr?.destroy();
     this.uniformsB.destroy();

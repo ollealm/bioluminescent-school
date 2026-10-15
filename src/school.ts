@@ -2,6 +2,7 @@ import { DevPanel } from "./DevPanel";
 import { installDiagnostics, type Diagnostics } from "./diagnostics";
 import { installFeelSwitcher, type FeelSwitcher } from "./feel";
 import { cpuSpec, FramePacer, gpuSpec, makeGovernor, type Governor, type GovernorSpec } from "./governor";
+import type { ProfileOptions, StageReport } from "./gpu/profile";
 import type { FilmstripOptions } from "./review";
 import type { Snapshot, SwarmSystem } from "./system";
 
@@ -31,6 +32,8 @@ import type { Snapshot, SwarmSystem } from "./system";
 interface App {
   system: SwarmSystem;
   render: () => void;
+  /** Per-stage GPU timing (GPU backend only), for `__stages()`. */
+  profile?: (opts?: ProfileOptions) => Promise<StageReport>;
   resize: (width: number, height: number, dpr: number) => void;
   dispose: () => void;
 }
@@ -426,6 +429,18 @@ Object.assign(window as object, {
     (await import("./review")).runFilmstrip(opts),
   __sweep: async (opts?: FilmstripOptions) =>
     (await import("./review")).runSweep(opts),
+  // Where a frame's GPU time goes on this device, per stage (src/gpu/profile.ts).
+  // The loop pauses while it runs.
+  __stages: async (opts?: ProfileOptions) => {
+    const profile = live?.application.profile;
+    if (!profile) throw new Error("__stages needs the WebGPU backend");
+    pauseDepth++;
+    try {
+      return await profile(opts);
+    } finally {
+      pauseDepth--;
+    }
+  },
 });
 
 let mounted = false;

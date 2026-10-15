@@ -29,6 +29,7 @@ import {
   WGSL_SCAN,
   WGSL_SIM,
 } from "./wgsl-sim";
+import { profileStages, type ProfileOptions, type StageReport } from "./profile";
 import { GpuRenderer } from "./renderer";
 
 // School moods (whole-swarm director) - identical to the CPU reference,
@@ -1586,6 +1587,41 @@ export class GpuSwarm implements SwarmSystem {
     return this.dyn![this.parity];
   }
   /** Which of dynBuffers() is current — renderer picks its bind group by it. */
+  /**
+   * Profiling only (src/gpu/profile.ts): encode one stage of the sim frame
+   * `k` times in a compute pass of its own. Repeats scramble this frame's
+   * grids (count and scatter are atomic) and may run in-place state ahead
+   * by k steps; the next real frame clears and rebuilds, so at most it
+   * blips.
+   */
+  encodeStage(enc: GPUCommandEncoder, stage: SimStage, k: number): void {
+    const p = this.pipelines;
+    const g = this.groups;
+    const pr = this.parity as 0 | 1;
+    const nWg256 = Math.ceil(this.count / 256);
+    const pass = enc.beginComputePass({ label: `profile:${stage}` });
+    const run = (pipeline: GPUComputePipeline, group: GPUBindGroup, workgroups: number) => {
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, group);
+      pass.dispatchWorkgroups(workgroups);
+    };
+    for (let i = 0; i < k; i++) {
+      if (stage === "clear") run(p.clear, g.clear, Math.ceil((CELLS + FINE_CELLS) / 256));
+      else if (stage === "count") run(p.count, g.count[pr], nWg256);
+      else if (stage === "scan") {
+        run(p.scanReduce, g.scan, SCAN_BLOCKS_COARSE + SCAN_BLOCKS_FINE);
+        run(p.scanBlocks, g.scan, 2);
+        run(p.scanDown, g.scan, SCAN_BLOCKS_COARSE + SCAN_BLOCKS_FINE);
+      } else if (stage === "scatter") run(p.scatter, g.scatter[pr], nWg256);
+      else if (stage === "sim") run(p.sim, g.sim[pr], Math.ceil(this.count / WG));
+      else {
+        run(p.reduce1, g.reduce[pr], REDUCE_WGS);
+        run(p.reduce2, g.reduce2, 1);
+      }
+    }
+    pass.end();
+  }
+
   currentParity(): 0 | 1 {
     return this.parity as 0 | 1;
   }
@@ -1678,9 +1714,15 @@ export class GpuSwarm implements SwarmSystem {
   }
 }
 
+/** The sim frame's stages, in dispatch order (the event resolve is left
+ * out: one workgroup, and only on frames with events). */
+export type SimStage = "clear" | "count" | "scan" | "scatter" | "sim" | "reduce";
+
 export interface GpuApp {
   system: GpuSwarm;
   render: () => void;
+  /** Per-stage GPU cost on this device (src/gpu/profile.ts). */
+  profile: (opts?: ProfileOptions) => Promise<StageReport>;
   resize: (width: number, height: number, dpr: number) => void;
   dispose: () => void;
 }
@@ -1736,6 +1778,7 @@ export async function createGpuApp(
     device,
     lost,
     render: () => renderer.render(),
+    profile: (opts) => profileStages(device, system, renderer, opts),
     resize: (w, h, dpr) => {
       system.updateRendererSize(w / 2, h / 2);
       renderer.resize(w, h, dpr);

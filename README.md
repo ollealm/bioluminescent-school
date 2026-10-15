@@ -170,7 +170,10 @@ elongation, edge sharpness, breathing, coherence swing. `await __sweep()`
 (a standard predator pass) and `await __filmstrip({ frames, intervalMs,
 path, click })` return one contact-sheet JPEG of the live animation with
 per-frame hot-pixel and footprint stats, which is how the feel was reviewed
-without watching it move; the image above is one. `window.swarm` and
+without watching it move; the image above is one. `await __stages()` times each GPU stage
+(grids, sim, sprites, tonemap, readback) on the device it runs on, and
+`node scripts/device-profile.mjs` runs it on a cabled iPhone's Safari
+over WebDriver (see the script for the one-time phone setup). `window.swarm` and
 `window.__render()` are exposed for poking. CI runs `typecheck` and
 `build`.
 
