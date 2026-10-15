@@ -529,6 +529,23 @@ at 60 fps; 45k sheds to 29k in 4 s, then to 23k under heavy tapping
 50k holds through taps (meter 8-15 ms), 100k sheds once to 80k and holds
 at 60 fps.
 
+**Safari's JIT and the CPU engine's update()** (2026-10-15). On iPhones the
+CPU fallback ran 2,200 fish in 6-10 ms, then, on mood switches or at a
+random moment 2-8 s in, fell to 36-80 ms and mostly stayed there (an
+iPhone 11 on iOS 26 and a 13 Pro on iOS 18 alike). A fixed reference
+workload timed beside it held steady, so not the core or clock; the loop
+cut after the neighbor pass stayed fast; V8 never showed it; a warm-up run
+of every code path on a throwaway school made it worse. The cause was
+update() itself: one ~1,000-line method that JavaScriptCore kept
+recompiling (each recompile of something that size takes seconds on a
+phone, at the slow tier meanwhile) and then gave up re-optimizing. Split
+into 27 methods of at most ~100 lines, with per-frame constants (`fr*`) and
+the current fish's working values (`cur*`) in instance fields, it holds
+~5 ms through every mood on the 13 Pro, both runs, vs 38-50 ms stuck on the
+old code. macOS's `jsc` reproduces it (old 22-35 ms, new 3.7-4.4 ms at
+2,200); V8 is unchanged (4.9-6.8 vs 4.9-6.4). The split is bit-identical:
+`scripts/cpu/run.sh determinism` hashes the same before and after.
+
 The points now accumulate into a half-float target with the same
 `SRC_ALPHA, ONE` blend, then resolve through the GPU's `fsTonemap`: the
 0.72 knee on the max channel, hue ratios kept, alpha clamped, the same

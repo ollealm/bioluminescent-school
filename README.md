@@ -173,7 +173,12 @@ per-frame hot-pixel and footprint stats, which is how the feel was reviewed
 without watching it move; the image above is one. `await __stages()` times each GPU stage
 (grids, sim, sprites, tonemap, readback) on the device it runs on, and
 `node scripts/device-profile.mjs` runs it on a cabled iPhone's Safari
-over WebDriver (see the script for the one-time phone setup). `window.swarm` and
+over WebDriver (see the script for the one-time phone setup; `--watch`
+logs the `?diag` overlay instead, `--script` runs any probe).
+`sh scripts/cpu/run.sh bench` times the CPU engine in V8 and in
+JavaScriptCore (macOS's `jsc`), and `sh scripts/cpu/run.sh determinism`
+hashes its state through a scripted session, so a refactor can prove it
+changed nothing. `window.swarm` and
 `window.__render()` are exposed for poking. CI runs `typecheck` and
 `build`.
 
@@ -211,7 +216,10 @@ render adds ~0.2 ms at 2880×1800. The CPU fallback steps 2,500 fish in
 holds 50,000 through tapping and settles 100,000 at 80,000, at 60 fps; an iPhone 11 on iOS 26 (the oldest
 iPhone with WebGPU in Safari) runs 30,000 at a clean 60 fps and holds the
 20,000 touch default through heavy tapping; an iPhone 13 Pro on iOS 18's
-flagged WebGPU settles near 16,000. Earlier runs, including the
+flagged WebGPU settles near 16,000. The CPU fallback on an iPhone 13 Pro
+(iOS 18) steps 2,200 fish in ~5 ms through every mood; before its update()
+was split into small methods, Safari's JIT dropped it to 40-50 ms after a
+few mood switches, for good. Earlier runs, including the
 original 50,000-particle acceptance table, are in
 [`docs/NOTES.md`](docs/NOTES.md#4-measurements).
 

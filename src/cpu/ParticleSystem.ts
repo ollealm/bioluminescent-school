@@ -1651,6 +1651,49 @@ export class ParticleSystem implements SwarmSystem {
     );
   }
 
+  // collide()'s result: the summed close-range push on one fish.
+  private hpX = 0;
+  private hpY = 0;
+  private hpZ = 0;
+
+  /** The fine collision grid's push on fish i (into hpX/hpY/hpZ). */
+  private collide(
+    i: number, x: number, y: number, z: number,
+    posPrev: Float32Array, pushR: number, pushR2: number,
+  ): void {
+    let hpX = 0, hpY = 0, hpZ = 0;
+    const fx = ParticleSystem.fineCoord(x, FX);
+    const fy = ParticleSystem.fineCoord(y, FY);
+    const fz = ParticleSystem.fineCoord(z, FZ);
+    for (let oz = fz > 0 ? fz - 1 : 0; oz <= fz + 1 && oz < FZ; oz++) {
+      for (let oy = fy > 0 ? fy - 1 : 0; oy <= fy + 1 && oy < FY; oy++) {
+        const row = oy * FX + oz * FXY;
+        for (let ox = fx > 0 ? fx - 1 : 0; ox <= fx + 1 && ox < FX; ox++) {
+          const cell = ox + row;
+          const start = this.fineStart[cell];
+          const end = start + this.fineCount[cell];
+          for (let e = start; e < end; e++) {
+            const j = this.fineEntries[e];
+            if (j === i) continue;
+            const dx = posPrev[j * 3] - x;
+            const dy = posPrev[j * 3 + 1] - y;
+            const dz = posPrev[j * 3 + 2] - z;
+            const d2 = dx * dx + dy * dy + dz * dz;
+            if (d2 >= pushR2) continue;
+            const d = Math.max(Math.sqrt(d2), 1e-4);
+            const k = ((1 - d / pushR) * GPU_TUNING.pairPush) / d;
+            hpX -= dx * k;
+            hpY -= dy * k;
+            hpZ -= dz * k;
+          }
+        }
+      }
+    }
+    this.hpX = hpX;
+    this.hpY = hpY;
+    this.hpZ = hpZ;
+  }
+
   /** Clamped fine-grid coordinate along one axis. */
   private static fineCoord(v: number, dim: number): number {
     const c = Math.floor(v * F_INV) + (dim >> 1);
@@ -1765,6 +1808,174 @@ export class ParticleSystem implements SwarmSystem {
   // ------------------------------------------------------------------
   // Main update
   // ------------------------------------------------------------------
+  //
+  // The frame is a few setup methods, a fish loop of small methods and a
+  // wrap-up. It was one ~1,000-line update(), and on iPhones JavaScriptCore
+  // dropped it to a 5-8x slower tier for seconds at a time once the school
+  // ran, often for good (V8 never did). The likely cause: a frame value
+  // flips type speculation (int vs double), say on a mood switch, JSC
+  // throws the compiled function away whole, and recompiling 1,000 lines
+  // takes long enough on a phone that its backoff makes the slow tier
+  // stick. Small methods compile fast and fail on their own.
+  //
+  // The methods share state through the fields below instead of locals.
+  // Each holds a number from construction (flags as 0/1), so the object's
+  // shape never changes. The split kept every floating-point operation and
+  // Math.random() call in its old order: the step is bit for bit the old
+  // one.
+
+  // Frame constants: set by the setup methods before the fish loop, only
+  // read inside it.
+  private frDt = 0;
+  private frT = 0;
+  private frPerception = 0;
+  private frPerception2 = 0;
+  private frSepR = 0;
+  private frArriveR = 0;
+  private frPushR = 0;
+  private frPushR2 = 0;
+  private frInvCell = 0;
+  private frDragF = 0;
+  private frEnergyDecay = 0;
+  private frFearDecayF = 0;
+  private frFearSpreadDt = 0;
+  private frGlowK = 0;
+  private frBreatheR = 0;
+  private frFarR = 0;
+  /** Flow-field wave numbers and phase. */
+  private frKx = 0;
+  private frKy = 0;
+  private frKz = 0;
+  private frFt = 0;
+  private frMaxSpeedBase = 0;
+  private frMouseR = 0;
+  private frSplashBoost = 0;
+  private frIgniteRate = 0;
+  // The levers (each 0 = v3); frEvOn is evade's on flag.
+  private frShape = 0;
+  private frSheet = 0;
+  private frHerd = 0;
+  private frRally = 0;
+  private frEvade = 0;
+  private frEvOn = 0;
+  private frFlight = 0;
+  private frBite = 0;
+  private frThreatBand = 0;
+  // The predator: pointer on flag and position, its smoothed speed and
+  // heading, and the lead point the danger zone is measured from.
+  private frPointerOn = 0;
+  private frPx = 0;
+  private frPy = 0;
+  private frPz = 0;
+  private frPvm = 0;
+  private frVhx = 0;
+  private frVhy = 0;
+  private frVhz = 0;
+  private frTpx = 0;
+  private frTpy = 0;
+  private frTpz = 0;
+  // The school: roam target, heading, the director's gains, recentering,
+  // last frame's centroid and the (evade-shifted) herd center.
+  private frRoamX = 0;
+  private frRoamY = 0;
+  private frRoamZ = 0;
+  private frHeadX = 0;
+  private frHeadY = 0;
+  private frHeadZ = 0;
+  private frDirAlign = 0;
+  private frDirCoh = 0;
+  private frDirSpeed = 0;
+  private frDriveW = 0;
+  private frGaitRate = 0;
+  private frMillF = 0;
+  private frSepW = 0;
+  private frHerdGain = 0;
+  private frReCenterX = 0;
+  private frReCenterY = 0;
+  private frReCenterZ = 0;
+  private frCenX = 0;
+  private frCenY = 0;
+  private frCenZ = 0;
+  private frHcX = 0;
+  private frHcY = 0;
+  private frHcZ = 0;
+  // The turn wave: on flag, leader position, front radius², old heading.
+  private frTurnOn = 0;
+  private frTcx = 0;
+  private frTcy = 0;
+  private frTcz = 0;
+  private frTurnR2 = 0;
+  private frOldHX = 0;
+  private frOldHY = 0;
+  private frOldHZ = 0;
+  /** Seeds this frame's neighbor sampling order. */
+  private frFrameHash = 0;
+
+  // School-wide sums over the fish loop.
+  private sumCX = 0;
+  private sumCY = 0;
+  private sumCZ = 0;
+  private sumCN = 0;
+  private sumSpread = 0;
+  private sumFear = 0;
+
+  // The fish being stepped: its state at the start of the step and the
+  // working values the per-fish methods hand along.
+  private curX = 0;
+  private curY = 0;
+  private curZ = 0;
+  /** Velocity being built; integrate() stores it. */
+  private curVX = 0;
+  private curVY = 0;
+  private curVZ = 0;
+  /** Mode at the start of the step (the step may switch this.mode[i]). */
+  private curMode = 0;
+  private curSocial = 0;
+  private curSpdF = 0;
+  private curSeed = 0;
+  /** The heading this fish follows: the old one outside the turn front. */
+  private curMhX = 0;
+  private curMhY = 0;
+  private curMhZ = 0;
+  /** Fear after decay and spread; contact with the predator raises it. */
+  private curFear = 0;
+  // Predator proximity (fearAndThreat()); threatNear and inFlight are 0/1.
+  private curPdx = 0;
+  private curPdy = 0;
+  private curPdz = 0;
+  private curPd = 0;
+  private curUNorm = 0;
+  private curThreatNear = 0;
+  private curPredFall = 0;
+  private curInFlight = 0;
+  // The steering sum, the collision push integrated beside it, the speed
+  // the steering aims for and the cap's rush boost.
+  private curAX = 0;
+  private curAY = 0;
+  private curAZ = 0;
+  private curPkX = 0;
+  private curPkY = 0;
+  private curPkZ = 0;
+  private curMaxSpeed = 0;
+  private curRallyBoost = 0;
+  // escapeHeading()'s result.
+  private escX = 0;
+  private escY = 0;
+  private escZ = 0;
+  // The neighbor pass's sums; bestJ is the strongest glowing neighbor.
+  private nbSepX = 0;
+  private nbSepY = 0;
+  private nbSepZ = 0;
+  private nbCohX = 0;
+  private nbCohY = 0;
+  private nbCohZ = 0;
+  private nbAlnX = 0;
+  private nbAlnY = 0;
+  private nbAlnZ = 0;
+  private nbFound = 0;
+  private nbContagion = 0;
+  private nbBestJ = -1;
+  private nbMaxFear = 0;
 
   update(deltaTime: number): void {
     const P = this.params;
@@ -1775,57 +1986,116 @@ export class ParticleSystem implements SwarmSystem {
     if (dt <= 0) return;
     this.time += dt;
     this.frameNo = (this.frameNo + 1) >>> 0;
+    this.frDt = dt;
+    this.frT = this.time;
 
-    const t = this.time;
+    // In this order: each step reads state the one before it moved.
+    this.setFrameConstants();
+    this.trackPointer();
+    this.steerSchool();
+    this.setSchoolConstants();
+    this.snapshotFrame();
+    this.spontaneousEvents();
+
+    // Fresh sampling order every frame, so no subset is favored over time.
+    this.frFrameHash = pcg(Math.imul(this.frameNo, 2654435761) >>> 0);
+
+    this.sumCX = 0;
+    this.sumCY = 0;
+    this.sumCZ = 0;
+    this.sumCN = 0;
+    this.sumSpread = 0;
+    this.sumFear = 0;
+
     const n = this.count;
-    const pos = this.pos;
-    const vel = this.vel;
-    const energy = this.energy;
-    const glow = this.glow;
-    const fear = this.fear;
+    for (let i = 0; i < n; i++) {
+      this.loadFish(i);
+      this.accumulateNeighbors(this.sampleNeighbors(i));
+      this.collide(i, this.curX, this.curY, this.curZ, this.posPrev, this.frPushR, this.frPushR2);
+      this.exciteMedium(i);
+      this.fearAndThreat(i);
+      this.steerSeparation(i);
+      this.steerCohesionAlignment();
+      this.schoolWill();
+      this.ambientFlow();
+      this.sheetPull();
+      this.modeBehavior(i);
+      this.pointerEscape(i);
+      this.regroup();
+      this.bubblePulse(i);
+      this.gaitStep(i);
+      this.integrate(i);
+      this.shearGlow(i);
+      this.flashBookkeeping(i);
+    }
 
-    // Frame constants
+    this.endFrame();
+  }
+
+  // ---- Frame setup ----
+
+  /** The frame's constants from the params, the clock and the pointer. */
+  private setFrameConstants(): void {
+    const P = this.params;
+    const dt = this.frDt;
+    const t = this.frT;
+
     const perception = Math.max(0.5, P.perception);
-    const perception2 = perception * perception;
+    this.frPerception = perception;
+    this.frPerception2 = perception * perception;
     const sepR = perception * TUNING.separationRatio;
-    const arriveR = perception * TUNING.arriveRatio;
+    this.frSepR = sepR;
+    this.frArriveR = perception * TUNING.arriveRatio;
     const pushR = Math.min(sepR * GPU_TUNING.pairPushRange, GPU_TUNING.fineCellSize);
-    const pushR2 = pushR * pushR;
-    const invCell = 1 / perception;
-    const dragF = Math.exp(-P.drag * dt);
-    const energyDecay = Math.exp(-P.flashDecay * dt);
-    const fearDecayF = Math.exp(-P.fearDecay * dt);
-    const fearSpreadDt = Math.min(1, P.fearSpread * dt);
-    const glowK = Math.min(1, dt * 5);
+    this.frPushR = pushR;
+    this.frPushR2 = pushR * pushR;
+    this.frInvCell = 1 / perception;
+    this.frDragF = Math.exp(-P.drag * dt);
+    this.frEnergyDecay = Math.exp(-P.flashDecay * dt);
+    this.frFearDecayF = Math.exp(-P.fearDecay * dt);
+    this.frFearSpreadDt = Math.min(1, P.fearSpread * dt);
+    this.frGlowK = Math.min(1, dt * 5);
     const breatheR = P.containRadius * (1 + P.breathe * Math.sin(t * 0.45));
-    const farR = breatheR * 2.1;
-    const kx = P.flowScale;
-    const ky = P.flowScale * 1.33;
-    const kz = P.flowScale * 0.77;
-    const ft = t * 0.6;
-    const maxSpeedBase = P.maxSpeed;
-    const mouseR = P.mouseRadius;
-    const pointerOn = this.pointerActive;
-    const px = this.pointer.x;
-    const py = this.pointer.y;
-    const pz = this.pointer.z;
-    const splashBoost = Math.min(2.5, this.mouseSpeed * P.splash * 0.6);
-    const igniteRate = this.mouseSpeed * P.splash * 1.2;
+    this.frBreatheR = breatheR;
+    this.frFarR = breatheR * 2.1;
+    this.frKx = P.flowScale;
+    this.frKy = P.flowScale * 1.33;
+    this.frKz = P.flowScale * 0.77;
+    this.frFt = t * 0.6;
+    this.frMaxSpeedBase = P.maxSpeed;
+    this.frMouseR = P.mouseRadius;
+    this.frPointerOn = this.pointerActive ? 1 : 0;
+    this.frPx = this.pointer.x;
+    this.frPy = this.pointer.y;
+    this.frPz = this.pointer.z;
+    this.frSplashBoost = Math.min(2.5, this.mouseSpeed * P.splash * 0.6);
+    this.frIgniteRate = this.mouseSpeed * P.splash * 1.2;
 
     // The levers (each 0 = v3).
-    const shape = P.shape ?? 0;
-    const sheet = P.sheet ?? 0;
-    const herd = P.herd ?? 0;
-    const rally = P.rally ?? 0;
-    const evade = P.evade ?? 0;
-    const flight = P.flight ?? 0;
+    this.frShape = P.shape ?? 0;
+    this.frSheet = P.sheet ?? 0;
+    this.frHerd = P.herd ?? 0;
+    this.frRally = P.rally ?? 0;
+    this.frEvade = P.evade ?? 0;
+    this.frFlight = P.flight ?? 0;
     // Below 1: smoothstep's edges must not meet.
     const bite = Math.min(0.9, Math.max(0, P.bite ?? 0));
+    this.frBite = bite;
     // The "still threatened" band shrinks with bite: a crisp predator must
     // not hold a wide halo open around a resting cursor. v3's 1.4 at 0.
-    const threatBand = 1.4 - 0.4 * bite;
+    this.frThreatBand = 1.4 - 0.4 * bite;
 
     this.mouseSpeed *= Math.exp(-2.5 * dt);
+  }
+
+  /** The predator's heading, its danger zone's lead point, and the strike. */
+  private trackPointer(): void {
+    const dt = this.frDt;
+    const t = this.frT;
+    const pointerOn = this.frPointerOn === 1;
+    const px = this.frPx;
+    const py = this.frPy;
+    const pz = this.frPz;
 
     // World-space pointer velocity (smoothed) — the predator's heading.
     if (pointerOn) {
@@ -1847,10 +2117,17 @@ export class ParticleSystem implements SwarmSystem {
     const vhy = pvm > 1e-3 ? this.pointerVel.y / pvm : 0;
     const vhz = pvm > 1e-3 ? this.pointerVel.z / pvm : 0;
     // The danger zone leads a moving predator — prey react to its approach.
-    const lead = Math.min(pvm * 0.22, mouseR * 0.9);
+    const lead = Math.min(pvm * 0.22, this.frMouseR * 0.9);
     const tpx = px + vhx * lead;
     const tpy = py + vhy * lead;
     const tpz = pz + vhz * lead;
+    this.frPvm = pvm;
+    this.frVhx = vhx;
+    this.frVhy = vhy;
+    this.frVhz = vhz;
+    this.frTpx = tpx;
+    this.frTpy = tpy;
+    this.frTpz = tpz;
 
     // The strike: a flick (rest bursting into speed) detonates a V-blast
     // at the lunge tip. Sustained fast movement never triggers it.
@@ -1865,6 +2142,18 @@ export class ParticleSystem implements SwarmSystem {
       this.strikeCooldown = GPU_TUNING.strikeCooldown;
       this.strike(tpx, tpy, tpz, vhx, vhy, vhz);
     }
+  }
+
+  /** Roam, evade and the director: where the school heads this frame. */
+  private steerSchool(): void {
+    const P = this.params;
+    const dt = this.frDt;
+    const t = this.frT;
+    const evade = this.frEvade;
+    const pointerOn = this.frPointerOn === 1;
+    const px = this.frPx;
+    const py = this.frPy;
+    const pz = this.frPz;
 
     // Roaming home region: a slow-wandering anchor the school patrols around.
     const roamR = (P.containRadius * 0.75 * P.roam) / 1.5;
@@ -1916,9 +2205,9 @@ export class ParticleSystem implements SwarmSystem {
     ) {
       this.evadeX = this.evadeY = this.evadeZ = 0;
     }
-    const roamX = targetX + this.evadeX;
-    const roamY = targetY + this.evadeY;
-    const roamZ = targetZ + this.evadeZ;
+    this.frRoamX = targetX + this.evadeX;
+    this.frRoamY = targetY + this.evadeY;
+    this.frRoamZ = targetZ + this.evadeZ;
 
     // The school's mind: moods, heading, false alarms.
     this.updateDirector(dt, targetX, targetY);
@@ -1937,61 +2226,78 @@ export class ParticleSystem implements SwarmSystem {
         this.headZ = nz / l;
       }
     }
+  }
 
-    const headX = this.headX;
-    const headY = this.headY;
-    const headZ = this.headZ;
-    const dirAlign = this.dirAlign;
-    const dirCoh = this.dirCoh;
-    const dirDrive = this.dirDrive;
+  /** The school's frame constants, once the director has moved. */
+  private setSchoolConstants(): void {
+    const P = this.params;
+    this.frHeadX = this.headX;
+    this.frHeadY = this.headY;
+    this.frHeadZ = this.headZ;
+    this.frDirAlign = this.dirAlign;
+    this.frDirCoh = this.dirCoh;
     const dirSpeed = this.dirSpeed;
-    const driveW = P.schoolDrive * dirDrive;
-    const gaitRate = 0.55 + dirSpeed * 1.3;
-    const millF = (P.mill + this.dirMill) * 2.6;
+    this.frDirSpeed = dirSpeed;
+    this.frDriveW = P.schoolDrive * this.dirDrive;
+    this.frGaitRate = 0.55 + dirSpeed * 1.3;
+    this.frMillF = (P.mill + this.dirMill) * 2.6;
     // The director's separation gain: 1 except the release pop.
-    const sepW = P.separation * this.dirSep;
-    const herdGain = this.dirHerd;
+    this.frSepW = P.separation * this.dirSep;
+    this.frHerdGain = this.dirHerd;
 
     // Group-level recentering: gentle, the cruise dynamics do the framing.
-    const reCenterX = (roamX - this.centroidX) * 0.22;
-    const reCenterY = (roamY - this.centroidY) * 0.22;
-    const reCenterZ = (roamZ - this.centroidZ) * 0.22;
+    this.frReCenterX = (this.frRoamX - this.centroidX) * 0.22;
+    this.frReCenterY = (this.frRoamY - this.centroidY) * 0.22;
+    this.frReCenterZ = (this.frRoamZ - this.centroidZ) * 0.22;
     const cenX = this.centroidX;
     const cenY = this.centroidY;
     const cenZ = this.centroidZ;
+    this.frCenX = cenX;
+    this.frCenY = cenY;
+    this.frCenZ = cenZ;
     // Herd/rally/regroup aim here: with evade on, the center shifted off
     // a parked predator, so the school pulls away from the threat instead
     // of into it.
-    const evOn = evade > 0.001;
-    const hcX = evOn ? cenX + this.evadeX : cenX;
-    const hcY = evOn ? cenY + this.evadeY : cenY;
-    const hcZ = evOn ? cenZ + this.evadeZ : cenZ;
+    const evOn = this.frEvade > 0.001;
+    this.frEvOn = evOn ? 1 : 0;
+    this.frHcX = evOn ? cenX + this.evadeX : cenX;
+    this.frHcY = evOn ? cenY + this.evadeY : cenY;
+    this.frHcZ = evOn ? cenZ + this.evadeZ : cenZ;
 
     // The turn wave: until the front (a sphere growing from the vanguard
     // fish) reaches a fish it keeps the old heading, so the turn is led by
     // a small group and spreads by alignment. Last frame's leader position.
-    const turnOn = this.turnActive > 0 && this.turnIndex < n;
-    const tcx = turnOn ? pos[this.turnIndex * 3] : 0;
-    const tcy = turnOn ? pos[this.turnIndex * 3 + 1] : 0;
-    const tcz = turnOn ? pos[this.turnIndex * 3 + 2] : 0;
-    const turnR2 = this.turnRadius * this.turnRadius;
-    const oldHX = this.turnOldX;
-    const oldHY = this.turnOldY;
-    const oldHZ = this.turnOldZ;
+    const pos = this.pos;
+    const turnOn = this.turnActive > 0 && this.turnIndex < this.count;
+    this.frTurnOn = turnOn ? 1 : 0;
+    this.frTcx = turnOn ? pos[this.turnIndex * 3] : 0;
+    this.frTcy = turnOn ? pos[this.turnIndex * 3 + 1] : 0;
+    this.frTcz = turnOn ? pos[this.turnIndex * 3 + 2] : 0;
+    this.frTurnR2 = this.turnRadius * this.turnRadius;
+    this.frOldHX = this.turnOldX;
+    this.frOldHY = this.turnOldY;
+    this.frOldHZ = this.turnOldZ;
+  }
 
-    this.buildGrid(invCell);
+  /** Rebuild the neighbor grid and snapshot last frame's state. */
+  private snapshotFrame(): void {
+    const n = this.count;
+    this.buildGrid(this.frInvCell);
     // Snapshot before this frame's ignitions, so a seed lights its
     // neighbors next frame, as on the GPU.
-    this.posPrev.set(pos.subarray(0, n * 3));
-    this.velPrev.set(vel.subarray(0, n * 3));
-    this.energyPrev.set(energy.subarray(0, n));
-    this.fearPrev.set(fear.subarray(0, n));
+    this.posPrev.set(this.pos.subarray(0, n * 3));
+    this.velPrev.set(this.vel.subarray(0, n * 3));
+    this.energyPrev.set(this.energy.subarray(0, n));
+    this.fearPrev.set(this.fear.subarray(0, n));
     this.pulsePrev.set(this.pulse.subarray(0, n * 3));
     this.pulseSignPrev.set(this.pulseSign.subarray(0, n));
-    const posPrev = this.posPrev;
-    const velPrev = this.velPrev;
-    const energyPrev = this.energyPrev;
-    const fearPrev = this.fearPrev;
+  }
+
+  /** Spontaneous flashes and wander groups. */
+  private spontaneousEvents(): void {
+    const P = this.params;
+    const dt = this.frDt;
+    const n = this.count;
 
     // Spontaneous flashes: the swarm glimmers on its own.
     let spontAcc = P.spontaneous * dt;
@@ -2011,774 +2317,1035 @@ export class ParticleSystem implements SwarmSystem {
         this.spawnWanderGroup();
       }
     }
+  }
 
-    // Fresh sampling order every frame, so no subset is favored over time.
-    const frameHash = pcg(Math.imul(this.frameNo, 2654435761) >>> 0);
+  // ---- The fish step, in loop order ----
 
-    let cSumX = 0;
-    let cSumY = 0;
-    let cSumZ = 0;
-    let cNum = 0;
-    let spreadSum = 0;
-    let fearSum = 0;
+  /** Fish i's start-of-step state, and the heading it follows. */
+  private loadFish(i: number): void {
+    const i3 = i * 3;
+    const pos = this.pos;
+    const vel = this.vel;
+    const x = pos[i3];
+    const y = pos[i3 + 1];
+    const z = pos[i3 + 2];
+    this.curX = x;
+    this.curY = y;
+    this.curZ = z;
+    this.curVX = vel[i3];
+    this.curVY = vel[i3 + 1];
+    this.curVZ = vel[i3 + 2];
+    this.curMode = this.mode[i];
+    this.curSocial = this.social[i];
+    this.curSpdF = this.speedFactor[i];
+    this.curSeed = this.seeds[i];
 
-    for (let i = 0; i < n; i++) {
-      const i3 = i * 3;
-      const x = pos[i3];
-      const y = pos[i3 + 1];
-      const z = pos[i3 + 2];
-      let vx = vel[i3];
-      let vy = vel[i3 + 1];
-      let vz = vel[i3 + 2];
-      const m = this.mode[i];
-      const social = this.social[i];
-      const spdF = this.speedFactor[i];
-      const seed = this.seeds[i];
-
-      let mhX = headX, mhY = headY, mhZ = headZ;
-      if (turnOn) {
-        const ddx = x - tcx;
-        const ddy = y - tcy;
-        const ddz = z - tcz;
-        if (ddx * ddx + ddy * ddy + ddz * ddz > turnR2) {
-          mhX = oldHX; mhY = oldHY; mhZ = oldHZ;
-        }
+    let mhX = this.frHeadX, mhY = this.frHeadY, mhZ = this.frHeadZ;
+    if (this.frTurnOn === 1) {
+      const ddx = x - this.frTcx;
+      const ddy = y - this.frTcy;
+      const ddz = z - this.frTcz;
+      if (ddx * ddx + ddy * ddy + ddz * ddz > this.frTurnR2) {
+        mhX = this.frOldHX; mhY = this.frOldHY; mhZ = this.frOldHZ;
       }
+    }
+    this.curMhX = mhX;
+    this.curMhY = mhY;
+    this.curMhZ = mhZ;
+  }
 
-      // ---- Neighbor pass: boids accumulators + contagion pressure ----
-      let sepX = 0, sepY = 0, sepZ = 0;
-      let cohX = 0, cohY = 0, cohZ = 0;
-      let alnX = 0, alnY = 0, alnZ = 0;
-      let found = 0;
-      let contagion = 0;
-      let bestJ = -1; // strongest glowing neighbor — its cascade is inherited
-      let bestW = 0;
-      let maxFear = 0;
+  /**
+   * Neighbor pass, part 1: sample fish i's neighbors into nbJ. Returns
+   * how many were accepted (at most MAX_NEIGHBORS).
+   */
+  private sampleNeighbors(i: number): number {
+    const x = this.curX;
+    const y = this.curY;
+    const z = this.curZ;
+    const invCell = this.frInvCell;
+    const perception2 = this.frPerception2;
+    const posPrev = this.posPrev;
+    const gridCount = this.gridCount;
 
-      const cx = ParticleSystem.cellCoord(x, invCell);
-      const cy = ParticleSystem.cellCoord(y, invCell);
-      const cz = ParticleSystem.cellCoord(z, invCell);
+    const cx = ParticleSystem.cellCoord(x, invCell);
+    const cy = ParticleSystem.cellCoord(y, invCell);
+    const cz = ParticleSystem.cellCoord(z, invCell);
 
-      // Stratified fair sample (the GPU kernel's scheme, see wgsl-sim.ts):
-      // v3 took the first 16 in fixed cell order, so the sample averaged
-      // over cells, not fish. That makes cohesion/alignment depend on where
-      // a fish sits inside its cell, a static force with the grid pitch
-      // that banded the school along the grid planes. Each cell gets a
-      // candidate quota proportional to its population (dithered so the
-      // expectation is exact) from a hashed in-cell start, so the candidates
-      // are a uniform sample of the 27-cell block.
-      // No own-cell priority: any position-quantized bias compounds.
-      let total = 0;
+    // Stratified fair sample (the GPU kernel's scheme, see wgsl-sim.ts):
+    // v3 took the first 16 in fixed cell order, so the sample averaged
+    // over cells, not fish. That makes cohesion/alignment depend on where
+    // a fish sits inside its cell, a static force with the grid pitch
+    // that banded the school along the grid planes. Each cell gets a
+    // candidate quota proportional to its population (dithered so the
+    // expectation is exact) from a hashed in-cell start, so the candidates
+    // are a uniform sample of the 27-cell block.
+    // No own-cell priority: any position-quantized bias compounds.
+    let total = 0;
+    for (let oi = 0; oi < 27; oi++) {
+      const gx = cx + OFF_X[oi];
+      const gy = cy + OFF_Y[oi];
+      const gz = cz + OFF_Z[oi];
+      if (gx < 0 || gx >= D || gy < 0 || gy >= D || gz < 0 || gz >= D) {
+        nbCell[oi] = -1;
+        continue;
+      }
+      const cell = gx + gy * D + gz * D2;
+      nbCell[oi] = cell;
+      total += gridCount[cell];
+    }
+    // Unlike the GPU kernel, every candidate is examined and the 16
+    // accepts are a reservoir sample of all in-range ones. In a flattened
+    // school (olle-work's sheet, ~33 of 96 candidates in range) the cap
+    // binds about halfway, and stopping there kept the first cells of the
+    // walk: still ±5% banding. Hashes are masked to 30 bits so V8 keeps `%` in
+    // integer registers (a full u32 is a double and `%` becomes fmod).
+    let inRange = 0;
+    if (total > 0) {
+      const candScale = SAMPLE_CAND / total;
+      let rs = pcg((i ^ this.frFrameHash) >>> 0);
       for (let oi = 0; oi < 27; oi++) {
-        const gx = cx + OFF_X[oi];
-        const gy = cy + OFF_Y[oi];
-        const gz = cz + OFF_Z[oi];
-        if (gx < 0 || gx >= D || gy < 0 || gy >= D || gz < 0 || gz >= D) {
-          nbCell[oi] = -1;
-          continue;
-        }
-        const cell = gx + gy * D + gz * D2;
-        nbCell[oi] = cell;
-        total += this.gridCount[cell];
-      }
-      // Unlike the GPU kernel, every candidate is examined and the 16
-      // accepts are a reservoir sample of all in-range ones. In a flattened
-      // school (olle-work's sheet, ~33 of 96 candidates in range) the cap
-      // binds about halfway, and stopping there kept the first cells of the
-      // walk: still ±5% banding. Hashes are masked to 30 bits so V8 keeps `%` in
-      // integer registers (a full u32 is a double and `%` becomes fmod).
-      let inRange = 0;
-      if (total > 0) {
-        const candScale = SAMPLE_CAND / total;
-        let rs = pcg((i ^ frameHash) >>> 0);
-        for (let oi = 0; oi < 27; oi++) {
-          const cell = nbCell[oi];
-          if (cell < 0) continue;
-          const cnt = this.gridCount[cell];
-          if (cnt === 0) continue;
-          const h = pcg((rs ^ cell) >>> 0);
-          const dither = (pcg(h) >>> 8) * (1 / 16777216);
-          const quota = Math.min(cnt, Math.floor(cnt * candScale + dither));
-          const start = this.gridStart[cell];
-          const off = (h & 0x3fffffff) % cnt;
-          for (let e = 0; e < quota; e++) {
-            const oe = off + e;
-            const j = this.gridEntries[start + (oe < cnt ? oe : oe - cnt)];
-            if (j === i) continue;
-            const j3 = j * 3;
-            const dx = posPrev[j3] - x;
-            const dy = posPrev[j3 + 1] - y;
-            const dz = posPrev[j3 + 2] - z;
-            if (dx * dx + dy * dy + dz * dz > perception2) continue;
-            if (inRange < MAX_NEIGHBORS) {
-              nbJ[inRange] = j;
-            } else {
-              rs = pcg(rs);
-              const slot = (rs & 0x3fffffff) % (inRange + 1);
-              if (slot < MAX_NEIGHBORS) nbJ[slot] = j;
-            }
-            inRange++;
+        const cell = nbCell[oi];
+        if (cell < 0) continue;
+        const cnt = gridCount[cell];
+        if (cnt === 0) continue;
+        const h = pcg((rs ^ cell) >>> 0);
+        const dither = (pcg(h) >>> 8) * (1 / 16777216);
+        const quota = Math.min(cnt, Math.floor(cnt * candScale + dither));
+        const start = this.gridStart[cell];
+        const off = (h & 0x3fffffff) % cnt;
+        for (let e = 0; e < quota; e++) {
+          const oe = off + e;
+          const j = this.gridEntries[start + (oe < cnt ? oe : oe - cnt)];
+          if (j === i) continue;
+          const j3 = j * 3;
+          const dx = posPrev[j3] - x;
+          const dy = posPrev[j3 + 1] - y;
+          const dz = posPrev[j3 + 2] - z;
+          if (dx * dx + dy * dy + dz * dz > perception2) continue;
+          if (inRange < MAX_NEIGHBORS) {
+            nbJ[inRange] = j;
+          } else {
+            rs = pcg(rs);
+            const slot = (rs & 0x3fffffff) % (inRange + 1);
+            if (slot < MAX_NEIGHBORS) nbJ[slot] = j;
           }
+          inRange++;
         }
       }
-      const accepted = inRange < MAX_NEIGHBORS ? inRange : MAX_NEIGHBORS;
-      for (let k = 0; k < accepted; k++) {
-        const j = nbJ[k];
-        const j3 = j * 3;
-        const dx = posPrev[j3] - x;
-        const dy = posPrev[j3 + 1] - y;
-        const dz = posPrev[j3 + 2] - z;
-        const d = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1e-4;
-        if (d < sepR) {
-          const w = 1 - d / sepR;
-          const inv = (w * w) / d;
-          sepX -= dx * inv;
-          sepY -= dy * inv;
-          sepZ -= dz * inv;
-        }
-        cohX += posPrev[j3];
-        cohY += posPrev[j3 + 1];
-        cohZ += posPrev[j3 + 2];
-        alnX += velPrev[j3];
-        alnY += velPrev[j3 + 1];
-        alnZ += velPrev[j3 + 2];
-        found++;
+    }
+    return inRange < MAX_NEIGHBORS ? inRange : MAX_NEIGHBORS;
+  }
 
-        if (energyPrev[j] > TUNING.contagiousAbove) {
-          // Weighted by the source's remaining heat, as on the GPU: the
-          // radial kick flies a lit fish a perception radius while it is
-          // still contagious, and at full weight those spark carriers keep
-          // re-seeding the burn so cascades never die.
-          const srcHeat =
-            (energyPrev[j] - TUNING.contagiousAbove) / (1 - TUNING.contagiousAbove);
-          const w = (1 - d / perception) * srcHeat;
-          contagion += w;
-          if (w > bestW) {
-            bestW = w;
-            bestJ = j;
-          }
-        }
-        if (fearPrev[j] > maxFear) maxFear = fearPrev[j];
+  /**
+   * Neighbor pass, part 2: boids accumulators + contagion pressure over
+   * the first `accepted` fish in nbJ (into the nb* fields).
+   */
+  private accumulateNeighbors(accepted: number): void {
+    const x = this.curX;
+    const y = this.curY;
+    const z = this.curZ;
+    const sepR = this.frSepR;
+    const perception = this.frPerception;
+    const posPrev = this.posPrev;
+    const velPrev = this.velPrev;
+    const energyPrev = this.energyPrev;
+    const fearPrev = this.fearPrev;
+
+    let sepX = 0, sepY = 0, sepZ = 0;
+    let cohX = 0, cohY = 0, cohZ = 0;
+    let alnX = 0, alnY = 0, alnZ = 0;
+    let found = 0;
+    let contagion = 0;
+    let bestJ = -1; // strongest glowing neighbor — its cascade is inherited
+    let bestW = 0;
+    let maxFear = 0;
+
+    for (let k = 0; k < accepted; k++) {
+      const j = nbJ[k];
+      const j3 = j * 3;
+      const dx = posPrev[j3] - x;
+      const dy = posPrev[j3 + 1] - y;
+      const dz = posPrev[j3 + 2] - z;
+      const d = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1e-4;
+      if (d < sepR) {
+        const w = 1 - d / sepR;
+        const inv = (w * w) / d;
+        sepX -= dx * inv;
+        sepY -= dy * inv;
+        sepZ -= dz * inv;
       }
+      cohX += posPrev[j3];
+      cohY += posPrev[j3 + 1];
+      cohZ += posPrev[j3 + 2];
+      alnX += velPrev[j3];
+      alnY += velPrev[j3 + 1];
+      alnZ += velPrev[j3 + 2];
+      found++;
 
-      // ---- Fine collision grid: continuous close-range personal space ----
-      let hpX = 0, hpY = 0, hpZ = 0;
-      {
-        const fx = ParticleSystem.fineCoord(x, FX);
-        const fy = ParticleSystem.fineCoord(y, FY);
-        const fz = ParticleSystem.fineCoord(z, FZ);
-        for (let oz = fz > 0 ? fz - 1 : 0; oz <= fz + 1 && oz < FZ; oz++) {
-          for (let oy = fy > 0 ? fy - 1 : 0; oy <= fy + 1 && oy < FY; oy++) {
-            const row = oy * FX + oz * FXY;
-            for (let ox = fx > 0 ? fx - 1 : 0; ox <= fx + 1 && ox < FX; ox++) {
-              const cell = ox + row;
-              const start = this.fineStart[cell];
-              const end = start + this.fineCount[cell];
-              for (let e = start; e < end; e++) {
-                const j = this.fineEntries[e];
-                if (j === i) continue;
-                const dx = posPrev[j * 3] - x;
-                const dy = posPrev[j * 3 + 1] - y;
-                const dz = posPrev[j * 3 + 2] - z;
-                const d2 = dx * dx + dy * dy + dz * dz;
-                if (d2 >= pushR2) continue;
-                const d = Math.max(Math.sqrt(d2), 1e-4);
-                const k = ((1 - d / pushR) * GPU_TUNING.pairPush) / d;
-                hpX -= dx * k;
-                hpY -= dy * k;
-                hpZ -= dz * k;
-              }
-            }
-          }
+      if (energyPrev[j] > TUNING.contagiousAbove) {
+        // Weighted by the source's remaining heat, as on the GPU: the
+        // radial kick flies a lit fish a perception radius while it is
+        // still contagious, and at full weight those spark carriers keep
+        // re-seeding the burn so cascades never die.
+        const srcHeat =
+          (energyPrev[j] - TUNING.contagiousAbove) / (1 - TUNING.contagiousAbove);
+        const w = (1 - d / perception) * srcHeat;
+        contagion += w;
+        if (w > bestW) {
+          bestW = w;
+          bestJ = j;
         }
       }
+      if (fearPrev[j] > maxFear) maxFear = fearPrev[j];
+    }
 
-      // ---- Excitable medium: catch fire from glowing neighbors ----
-      if (this.refract[i] > 0) this.refract[i] -= dt;
-      if (
-        contagion > 0 &&
-        bestJ >= 0 &&
-        this.fired[i] === 0 &&
-        this.refract[i] <= 0 &&
-        energy[i] < TUNING.contagiousAbove
-      ) {
-        const p = 1 - Math.exp(-contagion * P.transmission * CPU_TRANSMISSION_SCALE * dt);
-        // Inherit the igniter's epicenter — the whole cascade stays one bubble.
-        if (Math.random() < p) {
-          this.igniteIndex(
-            i,
-            false,
-            this.pulsePrev[bestJ * 3],
-            this.pulsePrev[bestJ * 3 + 1],
-            this.pulsePrev[bestJ * 3 + 2],
-            this.pulseSignPrev[bestJ],
-          );
-          // igniteIndex kicks this.vel; the locals would overwrite it at
-          // integration (v3 lost every contagion kick that way).
-          vx = vel[i3];
-          vy = vel[i3 + 1];
-          vz = vel[i3 + 2];
-        }
-      }
+    this.nbSepX = sepX;
+    this.nbSepY = sepY;
+    this.nbSepZ = sepZ;
+    this.nbCohX = cohX;
+    this.nbCohY = cohY;
+    this.nbCohZ = cohZ;
+    this.nbAlnX = alnX;
+    this.nbAlnY = alnY;
+    this.nbAlnZ = alnZ;
+    this.nbFound = found;
+    this.nbContagion = contagion;
+    this.nbBestJ = bestJ;
+    this.nbMaxFear = maxFear;
+  }
 
-      // ---- Fear: wears off over time, spreads from panicked neighbors ----
-      let fearI = fear[i] * fearDecayF;
-      if (maxFear * TUNING.fearSpreadCeiling > fearI) {
-        fearI += (maxFear * TUNING.fearSpreadCeiling - fearI) * fearSpreadDt;
-      }
-      fear[i] = fearI < 0.005 ? 0 : fearI;
-      if (fearI < 0.005) fearI = 0;
-
-      // Predator proximity, depth-squashed, measured against the lead point
-      // (needed before steering: fear means scatter while the threat is
-      // close, regroup once it's gone). uNorm is "how deep into the danger
-      // zone" (1 = its edge).
-      let pdx = 0, pdy = 0, pdz = 0, pd = 1e9, uNorm = 1e9;
-      if (pointerOn) {
-        pdx = x - tpx;
-        pdy = y - tpy;
-        pdz = z - tpz;
-        const pdzS = pdz * 0.45;
-        pd = Math.sqrt(pdx * pdx + pdy * pdy + pdzS * pdzS) || 1e-4;
-        // Each fish has its own zone radius so the hollow is never a clean
-        // circle: a static per-fish jitter (0.75-1.25x) and an upstream
-        // stretch (a fish swimming toward the predator shies off up to 60%
-        // earlier). A real vacuole is a teardrop against the flow.
-        const spd0 = Math.sqrt(vx * vx + vy * vy + vz * vz);
-        const toward =
-          spd0 > 0.2 ? Math.max(0, -(vx * pdx + vy * pdy + vz * pdz) / (spd0 * pd)) : 0;
-        uNorm = pd / (mouseR * (0.75 + 0.5 * seed) * (1 + 0.6 * toward));
-      }
-      const threatNear = uNorm < threatBand;
-      // Bite moves the falloff's inner edge out: nothing until a fish is
-      // close, then the full bolt. Bite 0 is v3's u*u*(3-2u) exactly.
-      const predFall = pointerOn && uNorm < 1 ? 1 - smoothstep(bite, 1, uNorm) : 0;
-      // Flight: fear above 1 - flight keeps a fish bolting past the threat
-      // band, so hit fish (and those panic spread infects) stream out of
-      // the school before regrouping. Needs the pointer for a direction.
-      const inFlight = flight > 0.001 && pointerOn && fearI > 1 - flight;
-
-      // After a strike, far-flung survivors commit to returning: RETURN mode
-      // persists until they actually reach the shoal, outliving the fear
-      // itself (takes effect next frame).
-      if (m === FLOCK && fearI > 0.12 && !threatNear && !inFlight) {
-        const hx = x - cenX;
-        const hy = y - cenY;
-        const hz = z - cenZ;
-        if (hx * hx + hy * hy + hz * hz > breatheR * breatheR * 0.72) {
-          this.mode[i] = RETURN;
-          this.modeTimer[i] = 30;
-        }
-      }
-
-      // ---- Steering forces ----
-      let ax = 0, ay = 0, az = 0;
-      // Lifts the hard speed cap for the herd and rally rushes; 0 = v3.
-      let rallyBoost = 0;
-      let pkX = 0, pkY = 0, pkZ = 0;
-      const maxSpeed =
-        maxSpeedBase *
-        spdF *
-        (1 + energy[i] * TUNING.energySpeedBoost + fearI * TUNING.fearSpeedBoost);
-
-      // During an inburst, lit particles allow the crowd to condense —
-      // when the flash fades, separation snaps back and the bubble pops.
-      const relaxMul =
-        this.pulseSign[i] < 0 ? 1 - Math.min(1, energy[i]) * TUNING.inburstSepRelax : 1;
-
-      if (found > 0) {
-        // Separation (all modes — personal space is universal)
-        const sl = Math.sqrt(sepX * sepX + sepY * sepY + sepZ * sepZ);
-        if (sl > 1e-5) {
-          let sx = (sepX / sl) * maxSpeed - vx;
-          let sy = (sepY / sl) * maxSpeed - vy;
-          let sz = (sepZ / sl) * maxSpeed - vz;
-          const sm = Math.sqrt(sx * sx + sy * sy + sz * sz);
-          if (sm > MAX_FORCE) {
-            const f = MAX_FORCE / sm;
-            sx *= f; sy *= f; sz *= f;
-          }
-          ax += sx * sepW * relaxMul;
-          ay += sy * sepW * relaxMul;
-          az += sz * sepW * relaxMul;
-        }
-
-        // Collision pushout: obeys the inburst relax (bubbles must
-        // condense) and the user's separation slider, not the release pop.
-        // Fear damps it and a near threat disables it: threatened schools
-        // pack tighter, and shoves at the cleared column's wall would pump
-        // fish into it. Integrated beside the steering sum, because
-        // dodging a neighbor is not agitation and must not trip the glow.
-        if (!threatNear) {
-          const k = Math.min(1, P.separation) * relaxMul * (1 - fearI);
-          pkX = hpX * k;
-          pkY = hpY * k;
-          pkZ = hpZ * k;
-        }
-
-        // Wanderers cohere too, so a recruited group peels off as a
-        // sub-school instead of dust; away from the cloud their only
-        // neighbors are each other, so they can still leave it.
-        if (m === FLOCK || m === WANDER) {
-          // Cohesion — steer toward local center of mass, with "arrival"
-          // damping so particles already inside the cluster relax instead
-          // of endlessly compressing it.
-          let tx = cohX / found - x;
-          let ty = cohY / found - y;
-          // Sheet: pull harder toward the neighbors' depth. x1 at 0.
-          let tz = (cohZ / found - z) * (1 + 2 * sheet);
-          // Shape: anisotropic before arrival damping, so damping still
-          // governs the body and the stretch is a gain, not a spring.
-          if (shape >= 0.001) {
-            shapeAniso(tx, ty, tz, headX, headY, headZ, shape);
-            tx = ANISO[0]; ty = ANISO[1]; tz = ANISO[2];
-          }
-          let tl = Math.sqrt(tx * tx + ty * ty + tz * tz);
-          if (tl > 1e-5) {
-            const arrive = maxSpeed * Math.min(1, tl / arriveR);
-            tx = (tx / tl) * arrive - vx;
-            ty = (ty / tl) * arrive - vy;
-            tz = (tz / tl) * arrive - vz;
-            tl = Math.sqrt(tx * tx + ty * ty + tz * tz);
-            if (tl > MAX_FORCE) {
-              const f = MAX_FORCE / tl;
-              tx *= f; ty *= f; tz *= f;
-            }
-            // Threat close (or in flight): panic scatters the shoal. Threat
-            // gone: fear flips into an urgent drive to get back to the group.
-            let coh = P.cohesion * dirCoh * social;
-            if ((threatNear && fearI > 0.01) || inFlight) {
-              coh *= 1 - fearI * 0.6;
-            } else if (fearI > 0.08) {
-              // sqrt keeps the regroup urge alive — but not into the tail,
-              // or the shoal slowly packs itself into a center clump.
-              coh *= 1 + Math.sqrt(fearI) * P.regroup * 0.8;
-            }
-            ax += tx * coh;
-            ay += ty * coh;
-            az += tz * coh;
-          }
-        }
-
-        // Alignment — match the neighbors' heading at their actual pace
-        // (normalizing to maxSpeed would make an idle swarm race around).
-        // Every mode, so a wander group swims as one body.
-        let mx = alnX / found;
-        let my = alnY / found;
-        let mz = alnZ / found;
-        const ml = Math.sqrt(mx * mx + my * my + mz * mz);
-        if (ml > 1e-5) {
-          const match = Math.min(maxSpeed, ml * 1.15);
-          mx = (mx / ml) * match - vx;
-          my = (my / ml) * match - vy;
-          mz = (mz / ml) * match - vz;
-          const mm = Math.sqrt(mx * mx + my * my + mz * mz);
-          if (mm > MAX_FORCE) {
-            const f = MAX_FORCE / mm;
-            mx *= f; my *= f; mz *= f;
-          }
-          // ...but a fleeing (or turning) school moves as one.
-          const aln = P.alignment * dirAlign * social * (1 + fearI * 0.8);
-          ax += mx * aln;
-          ay += my * aln;
-          az += mz * aln;
-        }
-      }
-
-      // ---- The school's collective will: cruise along the shared heading ----
-      if (m === FLOCK && driveW > 0.01) {
-        const want = maxSpeedBase * spdF * dirSpeed;
-        let wx = mhX * want - vx;
-        let wy = mhY * want - vy;
-        let wz = mhZ * want - vz;
-        const wl = Math.sqrt(wx * wx + wy * wy + wz * wz);
-        if (wl > MAX_FORCE) {
-          const f = MAX_FORCE / wl;
-          wx *= f; wy *= f; wz *= f;
-        }
-        const w = driveW * (0.7 + 0.3 * social);
-        ax += wx * w;
-        ay += wy * w;
-        az += wz * w;
-      }
-
-      // ---- Ambient flow field: layered sine currents + global swirl ----
-      if (P.flowStrength > 0) {
-        ax += Math.sin(ky * y + ft) * Math.cos(kz * z - ft * 0.7) * P.flowStrength;
-        ay += Math.sin(kz * z + ft * 1.1) * Math.cos(kx * x + ft * 0.6) * P.flowStrength;
-        az += Math.sin(kx * x - ft * 0.8) * Math.cos(ky * y + ft * 0.5) * P.flowStrength * 0.6;
-      }
-      if (P.swirl > 0) {
-        const rr = Math.sqrt(x * x + z * z) + 1;
-        ax += (-z / rr) * P.swirl;
-        az += (x / rr) * P.swirl;
-      }
-      if (P.jitter > 0) {
-        ax += Math.sin(t * 1.9 + seed * 61.0) * P.jitter * 1.2;
-        ay += Math.sin(t * 1.6 + seed * 47.0) * P.jitter * 1.2;
-        az += Math.sin(t * 2.2 + seed * 29.0) * P.jitter * 0.8;
-      }
-
-      // ---- Sheet: flatten the school toward the view plane ----
-      // A school many fish deep along the camera axis averages its density
-      // waves away; a few deep, waves, holes and collapses show. A damped
-      // spring in z toward the school's mean depth.
-      if (sheet > 0.001 && (m === FLOCK || m === WANDER)) {
-        az += (cenZ - z) * (sheet * 6) - vz * (sheet * 2);
-      }
-
-      // ---- Mode behaviors ----
-      const rCenter = Math.sqrt(x * x + y * y + z * z);
-
-      if (m === FLOCK) {
-        // Soft anchor plus group recentering, both chasing the roam target.
-        const hx = x - roamX;
-        const hy = y - roamY;
-        const hz = z - roamZ;
-        let anX = -hx * 0.02, anY = -hy * 0.02, anZ = -hz * 0.02;
-        // The resting body elongates too: same anisotropy on the anchor.
-        if (shape >= 0.001) {
-          shapeAniso(anX, anY, anZ, headX, headY, headZ, shape);
-          anX = ANISO[0]; anY = ANISO[1]; anZ = ANISO[2];
-        }
-        ax += anX + reCenterX;
-        ay += anY + reCenterY;
-        az += anZ + reCenterZ;
-        // Selfish herd: every fish wants deeper into the school; rel² makes
-        // edge fish rush and core fish idle. No arrival damping on purpose:
-        // separation and crowd dim push back, and that standoff is the pulse.
-        if (herd > 0.001) {
-          const hvx = hcX - x;
-          const hvy = hcY - y;
-          const hvz = hcZ - z;
-          const hdc = Math.sqrt(hvx * hvx + hvy * hvy + hvz * hvz);
-          if (hdc > 0.3) {
-            const rel = Math.min(2, hdc / Math.max(1, P.containRadius * 0.8));
-            const g = (herd * herdGain * 12 * rel * rel) / hdc;
-            ax += hvx * g;
-            ay += hvy * g;
-            az += hvz * g;
-          }
-          // An alarm collapse lifts the speed cap so the rush in is
-          // visible. Nothing at herdGain 1 (every mood but contract).
-          rallyBoost = Math.max(rallyBoost, 0.5 * herd * (herdGain - 1));
-        }
-        const rHome = Math.sqrt(hx * hx + hy * hy + hz * hz);
-        if (rHome > breatheR) {
-          const over = rHome - breatheR;
-          const k = (over * over * 0.16) / rHome;
-          ax += -hx * k;
-          ay += -hy * k;
-          az += -hz * k;
-        }
-        // Fish mill: coherent rotation around the shoal's own center.
-        if (millF > 0.01) {
-          const mvx = x - cenX;
-          const mvy = y - cenY;
-          const mr = Math.sqrt(mvx * mvx + mvy * mvy) + 0.5;
-          ax += (-mvy / mr) * millF;
-          ay += (mvx / mr) * millF;
-        }
-      } else if (m === WANDER) {
-        this.modeTimer[i] -= dt;
-        ax += this.wanderDir[i3] * P.wanderPull * 3.2;
-        ay += this.wanderDir[i3 + 1] * P.wanderPull * 3.2;
-        az += this.wanderDir[i3 + 2] * P.wanderPull * 3.2;
-        // Far wall only — wanderers may leave the cloud, not the scene.
-        if (rCenter > farR) {
-          const over = rCenter - farR;
-          const k = (over * over * 0.3) / rCenter;
-          ax += -x * k;
-          ay += -y * k;
-          az += -z * k;
-        }
-        // Time's up — or a frightened wanderer gives up and heads home.
-        if (this.modeTimer[i] <= 0 || fearI > 0.35) {
-          this.mode[i] = RETURN;
-          this.modeTimer[i] = 30;
-        }
-      } else {
-        // RETURN — home in on the swarm centroid.
-        this.modeTimer[i] -= dt;
-        const hx = cenX - x;
-        const hy = cenY - y;
-        const hz = cenZ - z;
-        const hd = Math.sqrt(hx * hx + hy * hy + hz * hz) || 1;
-        ax += (hx / hd) * P.returnPull * 3.5;
-        ay += (hy / hd) * P.returnPull * 3.5;
-        az += (hz / hd) * P.returnPull * 3.5;
-        // Release at the rim — arriving at dead center would clump it.
-        if (hd < P.containRadius * 0.95 || this.modeTimer[i] <= 0) {
-          this.mode[i] = FLOCK;
-          // A soft rejoining glow (below the contagion threshold).
-          if (energy[i] < 0.5) energy[i] = 0.5;
-        }
-      }
-
-      // ---- Pointer: a predator to escape ----
-      // Not a radial force field: threatened particles pick an escape
-      // heading and are steered to *swim* along it — turning tail like fish.
-      // When the predator is moving, the heading parts sideways around its
-      // line of travel and drops behind it: the fountain maneuver.
-      if (pointerOn) {
-        let fdx = pdx / pd;
-        let fdy = pdy / pd;
-        let fdz = pdz / pd;
-        // Evade around a slow predator: blend the radial escape toward the
-        // fish's own sideways momentum, so the hollow is a ring of fish
-        // sliding past rather than a static shell. Radial at evade 0.
-        if (evOn && pvm <= 1.5) {
-          const pl = Math.max(Math.sqrt(pdx * pdx + pdy * pdy + pdz * pdz), 1e-6);
-          const erx = pdx / pl;
-          const ery = pdy / pl;
-          const erz = pdz / pl;
-          const vr = vx * erx + vy * ery + vz * erz;
-          let tgx = vx - erx * vr;
-          let tgy = vy - ery * vr;
-          let tgz = vz - erz * vr;
-          let tl = Math.sqrt(tgx * tgx + tgy * tgy + tgz * tgz);
-          if (tl < 0.15) {
-            // Barely moving sideways: pick a side per fish so both occur.
-            const side = seed > 0.5 ? 1 : -1;
-            tgx = -ery * side;
-            tgy = erx * side;
-            tgz = 0;
-            tl = Math.sqrt(tgx * tgx + tgy * tgy);
-          }
-          // tl ~ 0 only when the predator is straight along z; stay radial.
-          if (tl > 1e-5) {
-            const ex = erx * (1 - 0.6 * evade) + (tgx / tl) * (1.2 * evade);
-            const ey = ery * (1 - 0.6 * evade) + (tgy / tl) * (1.2 * evade);
-            const ez = erz * (1 - 0.6 * evade) + (tgz / tl) * (1.2 * evade);
-            const el = Math.max(Math.sqrt(ex * ex + ey * ey + ez * ez), 1e-6);
-            fdx = ex / el;
-            fdy = ey / el;
-            fdz = ez / el;
-          }
-        }
-
-        if (uNorm < 1) {
-          const fall = predFall;
-
-          let ex = fdx;
-          let ey = fdy;
-          let ez = fdz;
-          if (pvm > 1.5) {
-            // Sideways component of the radial escape, relative to the
-            // predator's heading.
-            const along = ex * vhx + ey * vhy + ez * vhz;
-            let sx = ex - along * vhx;
-            let sy = ey - along * vhy;
-            let sz = ez - along * vhz;
-            let sl = Math.sqrt(sx * sx + sy * sy + sz * sz);
-            if (sl < 0.15) {
-              // Dead ahead on the path — dodge to a stable side.
-              sx = -vhy;
-              sy = vhx;
-              sz = 0;
-              sl = Math.sqrt(sx * sx + sy * sy) || 1;
-            }
-            sx /= sl;
-            sy /= sl;
-            sz /= sl;
-            // Part sideways, drift back relative to its travel: fountain.
-            ex = ex * 0.45 + sx - vhx * 0.35;
-            ey = ey * 0.45 + sy - vhy * 0.35;
-            ez = ez * 0.45 + sz - vhz * 0.35;
-            const el = Math.sqrt(ex * ex + ey * ey + ez * ez) || 1;
-            ex /= el;
-            ey /= el;
-            ez /= el;
-          }
-
-          // Steer toward swimming at panic speed along the escape heading.
-          let stx = ex * maxSpeed - vx;
-          let sty = ey * maxSpeed - vy;
-          let stz = ez * maxSpeed - vz;
-          const stl = Math.sqrt(stx * stx + sty * sty + stz * stz) || 1;
-          const force = P.repelForce * fall * (1 + splashBoost);
-          ax += (stx / stl) * force;
-          ay += (sty / stl) * force;
-          az += (stz / stl) * force * 0.6;
-
-          // Contact with the predator instills lasting fear.
-          if (fall > fearI) fear[i] = fearI = fall;
-
-          // Fast movement excites the swarm → cascades bursting away
-          // from the predator's bow like a wake.
-          if (igniteRate > 0.05 && this.fired[i] === 0 && this.refract[i] <= 0) {
-            if (Math.random() < igniteRate * fall * dt) {
-              this.igniteIndex(i, false, tpx, tpy, tpz, 1);
-              vx = vel[i3];
-              vy = vel[i3 + 1];
-              vz = vel[i3 + 2];
-            }
-          }
-        }
-        // Frightened particles keep swimming away even outside the radius —
-        // but only while the threat is still close; regrouping takes over
-        // the moment it is not.
-        if (fearI > 0.02 && threatNear) {
-          const flee = P.fleeForce * fearI;
-          ax += fdx * flee;
-          ay += fdy * flee;
-          az += fdz * flee * 0.35;
-        }
-        // In flight past the threat band: keep bolting, weaker at low
-        // flight so the carry-out grows with the slider.
-        if (inFlight && !threatNear) {
-          const flee = P.fleeForce * fearI * (0.35 + 0.65 * flight);
-          ax += (pdx / pd) * flee;
-          ay += (pdy / pd) * flee;
-          az += (pdz / pd) * flee * 0.35;
-        }
-      }
-
-      // Regroup urgency: still afraid but the threat is out of range —
-      // swim straight back to the shoal (works with the pointer gone too).
-      // Only particles still *outside* the shoal body are pulled home —
-      // once inside, the urge releases so the center doesn't clump. Waits
-      // until flight has burned off.
-      if (fearI > 0.02 && !threatNear && !inFlight) {
-        const hx = hcX - x;
-        const hy = hcY - y;
-        const hz = hcZ - z;
-        const hd = Math.sqrt(hx * hx + hy * hy + hz * hz);
-        if (hd > P.containRadius * 0.75) {
-          const g = (P.regroup * 3.2 * Math.sqrt(fearI)) / hd;
-          ax += hx * g;
-          ay += hy * g;
-          az += hz * g;
-        }
-        // Rally: frightened fish want the school's center, not its edge.
-        // No distance gate and no arrival damping, so they overshoot
-        // through the center; separation and crowd dim absorb the pile-up.
-        if (rally > 0.001 && hd > 0.5) {
-          const g = (P.regroup * 3.2 * Math.sqrt(fearI) * rally * 1.5) / hd;
-          ax += hx * g;
-          ay += hy * g;
-          az += hz * g;
-          rallyBoost = Math.max(rallyBoost, rally * Math.sqrt(fearI));
-        }
-      }
-
-      // ---- Bubble pulse: sustained radial push from the cascade epicenter,
-      // outward for a burst (+1), inward for a collapse (-1) ----
-      const ei = energy[i];
-      if (ei > 0.12 && P.kick > 0) {
-        const rx = x - this.pulse[i3];
-        const ry = y - this.pulse[i3 + 1];
-        const rz = z - this.pulse[i3 + 2];
-        const rd = Math.sqrt(rx * rx + ry * ry + rz * rz);
-        if (rd > 0.25) {
-          // Collapses need extra gain to beat the crowd pressure.
-          const gain =
-            this.pulseSign[i] > 0 ? TUNING.radialGainOut : TUNING.radialGainIn;
-          const f = (this.pulseSign[i] * ei * P.kick * gain) / rd;
-          ax += rx * f;
-          ay += ry * f;
-          az += rz * f * 0.7;
-        }
-      }
-
-      // ---- Burst-and-glide gait: thrust, then coast ----
-      if (P.gait > 0.01) {
-        this.gaitClock[i] -= dt * gaitRate;
-        if (this.gaitClock[i] <= 0) {
-          this.gaitClock[i] = 0.35 + Math.random() * 1.1;
-          // Thrust along current motion, blended with the fish's heading
-          // (the turn wave's, so fish the front hasn't reached don't get
-          // thrust onto the new heading early).
-          const sp = Math.sqrt(vx * vx + vy * vy + vz * vz);
-          const blend = m === FLOCK ? dirSpeed * 1.2 : 0.2;
-          const dxT = (sp > 0.2 ? vx / sp : mhX) + mhX * blend;
-          const dyT = (sp > 0.2 ? vy / sp : mhY) + mhY * blend;
-          const dzT = (sp > 0.2 ? vz / sp : mhZ) + mhZ * blend;
-          const dl = Math.sqrt(dxT * dxT + dyT * dyT + dzT * dzT) || 1;
-          const imp =
-            P.gait * spdF * (0.4 + dirSpeed * 0.9 + fearI * 0.7) *
-            maxSpeedBase * 0.34;
-          vx += (dxT / dl) * imp;
-          vy += (dyT / dl) * imp;
-          vz += (dzT / dl) * imp * 0.7;
-          if (imp > 0.35 && glow[i] < imp * 0.5) glow[i] = imp * 0.5;
-        }
-      }
-
-      // ---- Integrate ----
-      vx = (vx + (ax + pkX) * dt) * dragF;
-      vy = (vy + (ay + pkY) * dt) * dragF;
-      vz = (vz + (az + pkZ) * dt) * dragF;
-
-      const sp2 = vx * vx + vy * vy + vz * vz;
-      // maxSpeed also feeds the steering targets; only the hard cap rises.
-      const cap = maxSpeed * (1 + 0.8 * rallyBoost) * (m === WANDER ? 0.85 : 1) + 0.4;
-      if (sp2 > cap * cap) {
-        const f = cap / Math.sqrt(sp2);
-        vx *= f; vy *= f; vz *= f;
-      }
-
-      vel[i3] = vx;
-      vel[i3 + 1] = vy;
-      vel[i3 + 2] = vz;
-      pos[i3] = x + vx * dt;
-      pos[i3 + 1] = y + vy * dt;
-      pos[i3 + 2] = z + vz * dt;
-
-      // ---- Shear-triggered luminescence: agitation glows ----
-      // (like dinoflagellates firing when the water shears around them)
-      // Soft knee: steady cruising forces stay dark — only above-baseline
-      // acceleration (turn waves, thrusts, strikes) fires the light.
-      const aMag = Math.sqrt(ax * ax + ay * ay + az * az);
-      const gTarget = Math.min(
-        1,
-        Math.max(0, aMag - TUNING.glowKnee) * TUNING.glowGain,
+  /** Excitable medium: catch fire from glowing neighbors. */
+  private exciteMedium(i: number): void {
+    const refract = this.refract;
+    if (refract[i] > 0) refract[i] -= this.frDt;
+    const contagion = this.nbContagion;
+    const bestJ = this.nbBestJ;
+    if (
+      contagion > 0 &&
+      bestJ >= 0 &&
+      this.fired[i] === 0 &&
+      refract[i] <= 0 &&
+      this.energy[i] < TUNING.contagiousAbove
+    ) {
+      const p = 1 - Math.exp(
+        -contagion * this.params.transmission * CPU_TRANSMISSION_SCALE * this.frDt,
       );
-      glow[i] += (gTarget - glow[i]) * glowK;
-
-      // ---- Flash bookkeeping ----
-      let e = energy[i] * energyDecay;
-      if (e < 0.005) e = 0;
-      energy[i] = e;
-      if (this.fired[i] === 1 && e < TUNING.flashEndsBelow) {
-        this.fired[i] = 0;
-        this.refract[i] = P.refractory;
+      // Inherit the igniter's epicenter — the whole cascade stays one bubble.
+      if (Math.random() < p) {
+        this.igniteIndex(
+          i,
+          false,
+          this.pulsePrev[bestJ * 3],
+          this.pulsePrev[bestJ * 3 + 1],
+          this.pulsePrev[bestJ * 3 + 2],
+          this.pulseSignPrev[bestJ],
+        );
+        // igniteIndex kicks this.vel; the velocity being built would
+        // overwrite it at integration (v3 lost every contagion kick that
+        // way).
+        const i3 = i * 3;
+        this.curVX = this.vel[i3];
+        this.curVY = this.vel[i3 + 1];
+        this.curVZ = this.vel[i3 + 2];
       }
+    }
+  }
 
-      fearSum += fearI;
-      if (this.mode[i] === FLOCK) {
-        const nx = pos[i3];
-        const ny = pos[i3 + 1];
-        const nz = pos[i3 + 2];
-        cSumX += nx;
-        cSumY += ny;
-        cSumZ += nz;
-        cNum++;
-        // Spread about last frame's centroid (the GPU reduction's choice;
-        // the bias is negligible at swimming speed).
-        const sx = nx - cenX;
-        const sy = ny - cenY;
-        const sz = nz - cenZ;
-        spreadSum += sx * sx + sy * sy + sz * sz;
+  /**
+   * Fear: wears off over time, spreads from panicked neighbors. Then the
+   * predator's proximity, and the commitment to return.
+   */
+  private fearAndThreat(i: number): void {
+    const fear = this.fear;
+    const x = this.curX;
+    const y = this.curY;
+    const z = this.curZ;
+
+    const maxFear = this.nbMaxFear;
+    let fearI = fear[i] * this.frFearDecayF;
+    if (maxFear * TUNING.fearSpreadCeiling > fearI) {
+      fearI += (maxFear * TUNING.fearSpreadCeiling - fearI) * this.frFearSpreadDt;
+    }
+    fear[i] = fearI < 0.005 ? 0 : fearI;
+    if (fearI < 0.005) fearI = 0;
+
+    // Predator proximity, depth-squashed, measured against the lead point
+    // (needed before steering: fear means scatter while the threat is
+    // close, regroup once it's gone). uNorm is "how deep into the danger
+    // zone" (1 = its edge).
+    const pointerOn = this.frPointerOn === 1;
+    let pdx = 0, pdy = 0, pdz = 0, pd = 1e9, uNorm = 1e9;
+    if (pointerOn) {
+      pdx = x - this.frTpx;
+      pdy = y - this.frTpy;
+      pdz = z - this.frTpz;
+      const pdzS = pdz * 0.45;
+      pd = Math.sqrt(pdx * pdx + pdy * pdy + pdzS * pdzS) || 1e-4;
+      // Each fish has its own zone radius so the hollow is never a clean
+      // circle: a static per-fish jitter (0.75-1.25x) and an upstream
+      // stretch (a fish swimming toward the predator shies off up to 60%
+      // earlier). A real vacuole is a teardrop against the flow.
+      const vx = this.curVX;
+      const vy = this.curVY;
+      const vz = this.curVZ;
+      const spd0 = Math.sqrt(vx * vx + vy * vy + vz * vz);
+      const toward =
+        spd0 > 0.2 ? Math.max(0, -(vx * pdx + vy * pdy + vz * pdz) / (spd0 * pd)) : 0;
+      uNorm = pd / (this.frMouseR * (0.75 + 0.5 * this.curSeed) * (1 + 0.6 * toward));
+    }
+    const threatNear = uNorm < this.frThreatBand;
+    // Bite moves the falloff's inner edge out: nothing until a fish is
+    // close, then the full bolt. Bite 0 is v3's u*u*(3-2u) exactly.
+    const predFall = pointerOn && uNorm < 1 ? 1 - smoothstep(this.frBite, 1, uNorm) : 0;
+    // Flight: fear above 1 - flight keeps a fish bolting past the threat
+    // band, so hit fish (and those panic spread infects) stream out of
+    // the school before regrouping. Needs the pointer for a direction.
+    const flight = this.frFlight;
+    const inFlight = flight > 0.001 && pointerOn && fearI > 1 - flight;
+
+    // After a strike, far-flung survivors commit to returning: RETURN mode
+    // persists until they actually reach the shoal, outliving the fear
+    // itself (takes effect next frame).
+    if (this.curMode === FLOCK && fearI > 0.12 && !threatNear && !inFlight) {
+      const hx = x - this.frCenX;
+      const hy = y - this.frCenY;
+      const hz = z - this.frCenZ;
+      const breatheR = this.frBreatheR;
+      if (hx * hx + hy * hy + hz * hz > breatheR * breatheR * 0.72) {
+        this.mode[i] = RETURN;
+        this.modeTimer[i] = 30;
       }
     }
 
+    this.curFear = fearI;
+    this.curPdx = pdx;
+    this.curPdy = pdy;
+    this.curPdz = pdz;
+    this.curPd = pd;
+    this.curUNorm = uNorm;
+    this.curThreatNear = threatNear ? 1 : 0;
+    this.curPredFall = predFall;
+    this.curInFlight = inFlight ? 1 : 0;
+  }
+
+  /**
+   * Steering forces, part 1: the speed to steer for, separation and the
+   * collision pushout. Starts the steering sum.
+   */
+  private steerSeparation(i: number): void {
+    const P = this.params;
+    const energy = this.energy;
+    const fearI = this.curFear;
+    let ax = 0, ay = 0, az = 0;
+    // Lifts the hard speed cap for the herd and rally rushes; 0 = v3.
+    this.curRallyBoost = 0;
+    let pkX = 0, pkY = 0, pkZ = 0;
+    const maxSpeed =
+      this.frMaxSpeedBase *
+      this.curSpdF *
+      (1 + energy[i] * TUNING.energySpeedBoost + fearI * TUNING.fearSpeedBoost);
+
+    // During an inburst, lit particles allow the crowd to condense —
+    // when the flash fades, separation snaps back and the bubble pops.
+    const relaxMul =
+      this.pulseSign[i] < 0 ? 1 - Math.min(1, energy[i]) * TUNING.inburstSepRelax : 1;
+
+    if (this.nbFound > 0) {
+      // Separation (all modes — personal space is universal)
+      const sepX = this.nbSepX;
+      const sepY = this.nbSepY;
+      const sepZ = this.nbSepZ;
+      const sl = Math.sqrt(sepX * sepX + sepY * sepY + sepZ * sepZ);
+      if (sl > 1e-5) {
+        const sepW = this.frSepW;
+        let sx = (sepX / sl) * maxSpeed - this.curVX;
+        let sy = (sepY / sl) * maxSpeed - this.curVY;
+        let sz = (sepZ / sl) * maxSpeed - this.curVZ;
+        const sm = Math.sqrt(sx * sx + sy * sy + sz * sz);
+        if (sm > MAX_FORCE) {
+          const f = MAX_FORCE / sm;
+          sx *= f; sy *= f; sz *= f;
+        }
+        ax += sx * sepW * relaxMul;
+        ay += sy * sepW * relaxMul;
+        az += sz * sepW * relaxMul;
+      }
+
+      // Collision pushout: obeys the inburst relax (bubbles must
+      // condense) and the user's separation slider, not the release pop.
+      // Fear damps it and a near threat disables it: threatened schools
+      // pack tighter, and shoves at the cleared column's wall would pump
+      // fish into it. Integrated beside the steering sum, because
+      // dodging a neighbor is not agitation and must not trip the glow.
+      if (this.curThreatNear === 0) {
+        const k = Math.min(1, P.separation) * relaxMul * (1 - fearI);
+        pkX = this.hpX * k;
+        pkY = this.hpY * k;
+        pkZ = this.hpZ * k;
+      }
+    }
+
+    this.curMaxSpeed = maxSpeed;
+    this.curAX = ax;
+    this.curAY = ay;
+    this.curAZ = az;
+    this.curPkX = pkX;
+    this.curPkY = pkY;
+    this.curPkZ = pkZ;
+  }
+
+  /** Steering forces, part 2: cohesion and alignment. */
+  private steerCohesionAlignment(): void {
+    const found = this.nbFound;
+    if (!(found > 0)) return;
+    const P = this.params;
+    const m = this.curMode;
+    const social = this.curSocial;
+    const fearI = this.curFear;
+    const maxSpeed = this.curMaxSpeed;
+    const vx = this.curVX;
+    const vy = this.curVY;
+    const vz = this.curVZ;
+    let ax = this.curAX, ay = this.curAY, az = this.curAZ;
+
+    // Wanderers cohere too, so a recruited group peels off as a
+    // sub-school instead of dust; away from the cloud their only
+    // neighbors are each other, so they can still leave it.
+    if (m === FLOCK || m === WANDER) {
+      const shape = this.frShape;
+      // Cohesion — steer toward local center of mass, with "arrival"
+      // damping so particles already inside the cluster relax instead
+      // of endlessly compressing it.
+      let tx = this.nbCohX / found - this.curX;
+      let ty = this.nbCohY / found - this.curY;
+      // Sheet: pull harder toward the neighbors' depth. x1 at 0.
+      let tz = (this.nbCohZ / found - this.curZ) * (1 + 2 * this.frSheet);
+      // Shape: anisotropic before arrival damping, so damping still
+      // governs the body and the stretch is a gain, not a spring.
+      if (shape >= 0.001) {
+        shapeAniso(tx, ty, tz, this.frHeadX, this.frHeadY, this.frHeadZ, shape);
+        tx = ANISO[0]; ty = ANISO[1]; tz = ANISO[2];
+      }
+      let tl = Math.sqrt(tx * tx + ty * ty + tz * tz);
+      if (tl > 1e-5) {
+        const arrive = maxSpeed * Math.min(1, tl / this.frArriveR);
+        tx = (tx / tl) * arrive - vx;
+        ty = (ty / tl) * arrive - vy;
+        tz = (tz / tl) * arrive - vz;
+        tl = Math.sqrt(tx * tx + ty * ty + tz * tz);
+        if (tl > MAX_FORCE) {
+          const f = MAX_FORCE / tl;
+          tx *= f; ty *= f; tz *= f;
+        }
+        // Threat close (or in flight): panic scatters the shoal. Threat
+        // gone: fear flips into an urgent drive to get back to the group.
+        const threatNear = this.curThreatNear === 1;
+        const inFlight = this.curInFlight === 1;
+        let coh = P.cohesion * this.frDirCoh * social;
+        if ((threatNear && fearI > 0.01) || inFlight) {
+          coh *= 1 - fearI * 0.6;
+        } else if (fearI > 0.08) {
+          // sqrt keeps the regroup urge alive — but not into the tail,
+          // or the shoal slowly packs itself into a center clump.
+          coh *= 1 + Math.sqrt(fearI) * P.regroup * 0.8;
+        }
+        ax += tx * coh;
+        ay += ty * coh;
+        az += tz * coh;
+      }
+    }
+
+    // Alignment — match the neighbors' heading at their actual pace
+    // (normalizing to maxSpeed would make an idle swarm race around).
+    // Every mode, so a wander group swims as one body.
+    let mx = this.nbAlnX / found;
+    let my = this.nbAlnY / found;
+    let mz = this.nbAlnZ / found;
+    const ml = Math.sqrt(mx * mx + my * my + mz * mz);
+    if (ml > 1e-5) {
+      const match = Math.min(maxSpeed, ml * 1.15);
+      mx = (mx / ml) * match - vx;
+      my = (my / ml) * match - vy;
+      mz = (mz / ml) * match - vz;
+      const mm = Math.sqrt(mx * mx + my * my + mz * mz);
+      if (mm > MAX_FORCE) {
+        const f = MAX_FORCE / mm;
+        mx *= f; my *= f; mz *= f;
+      }
+      // ...but a fleeing (or turning) school moves as one.
+      const aln = P.alignment * this.frDirAlign * social * (1 + fearI * 0.8);
+      ax += mx * aln;
+      ay += my * aln;
+      az += mz * aln;
+    }
+
+    this.curAX = ax;
+    this.curAY = ay;
+    this.curAZ = az;
+  }
+
+  /** The school's collective will: cruise along the shared heading. */
+  private schoolWill(): void {
+    const driveW = this.frDriveW;
+    if (this.curMode === FLOCK && driveW > 0.01) {
+      const want = this.frMaxSpeedBase * this.curSpdF * this.frDirSpeed;
+      let wx = this.curMhX * want - this.curVX;
+      let wy = this.curMhY * want - this.curVY;
+      let wz = this.curMhZ * want - this.curVZ;
+      const wl = Math.sqrt(wx * wx + wy * wy + wz * wz);
+      if (wl > MAX_FORCE) {
+        const f = MAX_FORCE / wl;
+        wx *= f; wy *= f; wz *= f;
+      }
+      const w = driveW * (0.7 + 0.3 * this.curSocial);
+      this.curAX += wx * w;
+      this.curAY += wy * w;
+      this.curAZ += wz * w;
+    }
+  }
+
+  /** Ambient flow field: layered sine currents + global swirl. */
+  private ambientFlow(): void {
+    const P = this.params;
+    const x = this.curX;
+    const y = this.curY;
+    const z = this.curZ;
+    let ax = this.curAX, ay = this.curAY, az = this.curAZ;
+    if (P.flowStrength > 0) {
+      const kx = this.frKx;
+      const ky = this.frKy;
+      const kz = this.frKz;
+      const ft = this.frFt;
+      ax += Math.sin(ky * y + ft) * Math.cos(kz * z - ft * 0.7) * P.flowStrength;
+      ay += Math.sin(kz * z + ft * 1.1) * Math.cos(kx * x + ft * 0.6) * P.flowStrength;
+      az += Math.sin(kx * x - ft * 0.8) * Math.cos(ky * y + ft * 0.5) * P.flowStrength * 0.6;
+    }
+    if (P.swirl > 0) {
+      const rr = Math.sqrt(x * x + z * z) + 1;
+      ax += (-z / rr) * P.swirl;
+      az += (x / rr) * P.swirl;
+    }
+    if (P.jitter > 0) {
+      const t = this.frT;
+      const seed = this.curSeed;
+      ax += Math.sin(t * 1.9 + seed * 61.0) * P.jitter * 1.2;
+      ay += Math.sin(t * 1.6 + seed * 47.0) * P.jitter * 1.2;
+      az += Math.sin(t * 2.2 + seed * 29.0) * P.jitter * 0.8;
+    }
+    this.curAX = ax;
+    this.curAY = ay;
+    this.curAZ = az;
+  }
+
+  /**
+   * Sheet: flatten the school toward the view plane. A school many fish
+   * deep along the camera axis averages its density waves away; a few
+   * deep, waves, holes and collapses show. A damped spring in z toward the
+   * school's mean depth.
+   */
+  private sheetPull(): void {
+    const sheet = this.frSheet;
+    const m = this.curMode;
+    if (sheet > 0.001 && (m === FLOCK || m === WANDER)) {
+      this.curAZ += (this.frCenZ - this.curZ) * (sheet * 6) - this.curVZ * (sheet * 2);
+    }
+  }
+
+  /** Mode behaviors: flock (flockHome), wander, return. */
+  private modeBehavior(i: number): void {
+    const m = this.curMode;
+    if (m === FLOCK) {
+      this.flockHome();
+      return;
+    }
+    const P = this.params;
+    const dt = this.frDt;
+    const x = this.curX;
+    const y = this.curY;
+    const z = this.curZ;
+    const fearI = this.curFear;
+    const modeTimer = this.modeTimer;
+    let ax = this.curAX, ay = this.curAY, az = this.curAZ;
+
+    if (m === WANDER) {
+      const i3 = i * 3;
+      const rCenter = Math.sqrt(x * x + y * y + z * z);
+      modeTimer[i] -= dt;
+      ax += this.wanderDir[i3] * P.wanderPull * 3.2;
+      ay += this.wanderDir[i3 + 1] * P.wanderPull * 3.2;
+      az += this.wanderDir[i3 + 2] * P.wanderPull * 3.2;
+      // Far wall only — wanderers may leave the cloud, not the scene.
+      const farR = this.frFarR;
+      if (rCenter > farR) {
+        const over = rCenter - farR;
+        const k = (over * over * 0.3) / rCenter;
+        ax += -x * k;
+        ay += -y * k;
+        az += -z * k;
+      }
+      // Time's up — or a frightened wanderer gives up and heads home.
+      if (modeTimer[i] <= 0 || fearI > 0.35) {
+        this.mode[i] = RETURN;
+        modeTimer[i] = 30;
+      }
+    } else {
+      // RETURN — home in on the swarm centroid.
+      modeTimer[i] -= dt;
+      const hx = this.frCenX - x;
+      const hy = this.frCenY - y;
+      const hz = this.frCenZ - z;
+      const hd = Math.sqrt(hx * hx + hy * hy + hz * hz) || 1;
+      ax += (hx / hd) * P.returnPull * 3.5;
+      ay += (hy / hd) * P.returnPull * 3.5;
+      az += (hz / hd) * P.returnPull * 3.5;
+      // Release at the rim — arriving at dead center would clump it.
+      if (hd < P.containRadius * 0.95 || modeTimer[i] <= 0) {
+        this.mode[i] = FLOCK;
+        // A soft rejoining glow (below the contagion threshold).
+        if (this.energy[i] < 0.5) this.energy[i] = 0.5;
+      }
+    }
+
+    this.curAX = ax;
+    this.curAY = ay;
+    this.curAZ = az;
+  }
+
+  /** The flock mode: roam anchor, recentering, selfish herd, wall, mill. */
+  private flockHome(): void {
+    const P = this.params;
+    const x = this.curX;
+    const y = this.curY;
+    const z = this.curZ;
+    let ax = this.curAX, ay = this.curAY, az = this.curAZ;
+
+    // Soft anchor plus group recentering, both chasing the roam target.
+    const hx = x - this.frRoamX;
+    const hy = y - this.frRoamY;
+    const hz = z - this.frRoamZ;
+    let anX = -hx * 0.02, anY = -hy * 0.02, anZ = -hz * 0.02;
+    // The resting body elongates too: same anisotropy on the anchor.
+    const shape = this.frShape;
+    if (shape >= 0.001) {
+      shapeAniso(anX, anY, anZ, this.frHeadX, this.frHeadY, this.frHeadZ, shape);
+      anX = ANISO[0]; anY = ANISO[1]; anZ = ANISO[2];
+    }
+    ax += anX + this.frReCenterX;
+    ay += anY + this.frReCenterY;
+    az += anZ + this.frReCenterZ;
+    // Selfish herd: every fish wants deeper into the school; rel² makes
+    // edge fish rush and core fish idle. No arrival damping on purpose:
+    // separation and crowd dim push back, and that standoff is the pulse.
+    const herd = this.frHerd;
+    if (herd > 0.001) {
+      const herdGain = this.frHerdGain;
+      const hvx = this.frHcX - x;
+      const hvy = this.frHcY - y;
+      const hvz = this.frHcZ - z;
+      const hdc = Math.sqrt(hvx * hvx + hvy * hvy + hvz * hvz);
+      if (hdc > 0.3) {
+        const rel = Math.min(2, hdc / Math.max(1, P.containRadius * 0.8));
+        const g = (herd * herdGain * 12 * rel * rel) / hdc;
+        ax += hvx * g;
+        ay += hvy * g;
+        az += hvz * g;
+      }
+      // An alarm collapse lifts the speed cap so the rush in is
+      // visible. Nothing at herdGain 1 (every mood but contract).
+      this.curRallyBoost = Math.max(this.curRallyBoost, 0.5 * herd * (herdGain - 1));
+    }
+    const breatheR = this.frBreatheR;
+    const rHome = Math.sqrt(hx * hx + hy * hy + hz * hz);
+    if (rHome > breatheR) {
+      const over = rHome - breatheR;
+      const k = (over * over * 0.16) / rHome;
+      ax += -hx * k;
+      ay += -hy * k;
+      az += -hz * k;
+    }
+    // Fish mill: coherent rotation around the shoal's own center.
+    const millF = this.frMillF;
+    if (millF > 0.01) {
+      const mvx = x - this.frCenX;
+      const mvy = y - this.frCenY;
+      const mr = Math.sqrt(mvx * mvx + mvy * mvy) + 0.5;
+      ax += (-mvy / mr) * millF;
+      ay += (mvx / mr) * millF;
+    }
+
+    this.curAX = ax;
+    this.curAY = ay;
+    this.curAZ = az;
+  }
+
+  /**
+   * The escape heading from the predator (into escX/Y/Z): radial, or
+   * around a slow predator with evade on.
+   */
+  private escapeHeading(): void {
+    const pdx = this.curPdx;
+    const pdy = this.curPdy;
+    const pdz = this.curPdz;
+    const pd = this.curPd;
+    let fdx = pdx / pd;
+    let fdy = pdy / pd;
+    let fdz = pdz / pd;
+    // Evade around a slow predator: blend the radial escape toward the
+    // fish's own sideways momentum, so the hollow is a ring of fish
+    // sliding past rather than a static shell. Radial at evade 0.
+    if (this.frEvOn === 1 && this.frPvm <= 1.5) {
+      const evade = this.frEvade;
+      const vx = this.curVX;
+      const vy = this.curVY;
+      const vz = this.curVZ;
+      const pl = Math.max(Math.sqrt(pdx * pdx + pdy * pdy + pdz * pdz), 1e-6);
+      const erx = pdx / pl;
+      const ery = pdy / pl;
+      const erz = pdz / pl;
+      const vr = vx * erx + vy * ery + vz * erz;
+      let tgx = vx - erx * vr;
+      let tgy = vy - ery * vr;
+      let tgz = vz - erz * vr;
+      let tl = Math.sqrt(tgx * tgx + tgy * tgy + tgz * tgz);
+      if (tl < 0.15) {
+        // Barely moving sideways: pick a side per fish so both occur.
+        const side = this.curSeed > 0.5 ? 1 : -1;
+        tgx = -ery * side;
+        tgy = erx * side;
+        tgz = 0;
+        tl = Math.sqrt(tgx * tgx + tgy * tgy);
+      }
+      // tl ~ 0 only when the predator is straight along z; stay radial.
+      if (tl > 1e-5) {
+        const ex = erx * (1 - 0.6 * evade) + (tgx / tl) * (1.2 * evade);
+        const ey = ery * (1 - 0.6 * evade) + (tgy / tl) * (1.2 * evade);
+        const ez = erz * (1 - 0.6 * evade) + (tgz / tl) * (1.2 * evade);
+        const el = Math.max(Math.sqrt(ex * ex + ey * ey + ez * ez), 1e-6);
+        fdx = ex / el;
+        fdy = ey / el;
+        fdz = ez / el;
+      }
+    }
+    this.escX = fdx;
+    this.escY = fdy;
+    this.escZ = fdz;
+  }
+
+  /**
+   * Pointer: a predator to escape. Not a radial force field: threatened
+   * particles pick an escape heading and are steered to *swim* along it —
+   * turning tail like fish. When the predator is moving, the heading parts
+   * sideways around its line of travel and drops behind it: the fountain
+   * maneuver.
+   */
+  private pointerEscape(i: number): void {
+    if (this.frPointerOn === 0) return;
+    const P = this.params;
+    this.escapeHeading();
+    const fdx = this.escX;
+    const fdy = this.escY;
+    const fdz = this.escZ;
+    const threatNear = this.curThreatNear === 1;
+    let fearI = this.curFear;
+    let ax = this.curAX, ay = this.curAY, az = this.curAZ;
+
+    if (this.curUNorm < 1) {
+      const fall = this.curPredFall;
+
+      let ex = fdx;
+      let ey = fdy;
+      let ez = fdz;
+      if (this.frPvm > 1.5) {
+        const vhx = this.frVhx;
+        const vhy = this.frVhy;
+        const vhz = this.frVhz;
+        // Sideways component of the radial escape, relative to the
+        // predator's heading.
+        const along = ex * vhx + ey * vhy + ez * vhz;
+        let sx = ex - along * vhx;
+        let sy = ey - along * vhy;
+        let sz = ez - along * vhz;
+        let sl = Math.sqrt(sx * sx + sy * sy + sz * sz);
+        if (sl < 0.15) {
+          // Dead ahead on the path — dodge to a stable side.
+          sx = -vhy;
+          sy = vhx;
+          sz = 0;
+          sl = Math.sqrt(sx * sx + sy * sy) || 1;
+        }
+        sx /= sl;
+        sy /= sl;
+        sz /= sl;
+        // Part sideways, drift back relative to its travel: fountain.
+        ex = ex * 0.45 + sx - vhx * 0.35;
+        ey = ey * 0.45 + sy - vhy * 0.35;
+        ez = ez * 0.45 + sz - vhz * 0.35;
+        const el = Math.sqrt(ex * ex + ey * ey + ez * ez) || 1;
+        ex /= el;
+        ey /= el;
+        ez /= el;
+      }
+
+      // Steer toward swimming at panic speed along the escape heading.
+      const maxSpeed = this.curMaxSpeed;
+      let stx = ex * maxSpeed - this.curVX;
+      let sty = ey * maxSpeed - this.curVY;
+      let stz = ez * maxSpeed - this.curVZ;
+      const stl = Math.sqrt(stx * stx + sty * sty + stz * stz) || 1;
+      const force = P.repelForce * fall * (1 + this.frSplashBoost);
+      ax += (stx / stl) * force;
+      ay += (sty / stl) * force;
+      az += (stz / stl) * force * 0.6;
+
+      // Contact with the predator instills lasting fear.
+      if (fall > fearI) this.fear[i] = fearI = fall;
+
+      // Fast movement excites the swarm → cascades bursting away
+      // from the predator's bow like a wake.
+      const igniteRate = this.frIgniteRate;
+      if (igniteRate > 0.05 && this.fired[i] === 0 && this.refract[i] <= 0) {
+        if (Math.random() < igniteRate * fall * this.frDt) {
+          this.igniteIndex(i, false, this.frTpx, this.frTpy, this.frTpz, 1);
+          const i3 = i * 3;
+          this.curVX = this.vel[i3];
+          this.curVY = this.vel[i3 + 1];
+          this.curVZ = this.vel[i3 + 2];
+        }
+      }
+    }
+    // Frightened particles keep swimming away even outside the radius —
+    // but only while the threat is still close; regrouping takes over
+    // the moment it is not.
+    if (fearI > 0.02 && threatNear) {
+      const flee = P.fleeForce * fearI;
+      ax += fdx * flee;
+      ay += fdy * flee;
+      az += fdz * flee * 0.35;
+    }
+    // In flight past the threat band: keep bolting, weaker at low
+    // flight so the carry-out grows with the slider.
+    if (this.curInFlight === 1 && !threatNear) {
+      const flee = P.fleeForce * fearI * (0.35 + 0.65 * this.frFlight);
+      const pd = this.curPd;
+      ax += (this.curPdx / pd) * flee;
+      ay += (this.curPdy / pd) * flee;
+      az += (this.curPdz / pd) * flee * 0.35;
+    }
+
+    this.curFear = fearI;
+    this.curAX = ax;
+    this.curAY = ay;
+    this.curAZ = az;
+  }
+
+  /**
+   * Regroup urgency: still afraid but the threat is out of range — swim
+   * straight back to the shoal (works with the pointer gone too). Only
+   * particles still *outside* the shoal body are pulled home — once
+   * inside, the urge releases so the center doesn't clump. Waits until
+   * flight has burned off.
+   */
+  private regroup(): void {
+    const fearI = this.curFear;
+    if (fearI > 0.02 && this.curThreatNear === 0 && this.curInFlight === 0) {
+      const P = this.params;
+      const x = this.curX;
+      const y = this.curY;
+      const z = this.curZ;
+      let ax = this.curAX, ay = this.curAY, az = this.curAZ;
+      const hx = this.frHcX - x;
+      const hy = this.frHcY - y;
+      const hz = this.frHcZ - z;
+      const hd = Math.sqrt(hx * hx + hy * hy + hz * hz);
+      if (hd > P.containRadius * 0.75) {
+        const g = (P.regroup * 3.2 * Math.sqrt(fearI)) / hd;
+        ax += hx * g;
+        ay += hy * g;
+        az += hz * g;
+      }
+      // Rally: frightened fish want the school's center, not its edge.
+      // No distance gate and no arrival damping, so they overshoot
+      // through the center; separation and crowd dim absorb the pile-up.
+      const rally = this.frRally;
+      if (rally > 0.001 && hd > 0.5) {
+        const g = (P.regroup * 3.2 * Math.sqrt(fearI) * rally * 1.5) / hd;
+        ax += hx * g;
+        ay += hy * g;
+        az += hz * g;
+        this.curRallyBoost = Math.max(this.curRallyBoost, rally * Math.sqrt(fearI));
+      }
+      this.curAX = ax;
+      this.curAY = ay;
+      this.curAZ = az;
+    }
+  }
+
+  /**
+   * Bubble pulse: sustained radial push from the cascade epicenter,
+   * outward for a burst (+1), inward for a collapse (-1).
+   */
+  private bubblePulse(i: number): void {
+    const P = this.params;
+    const ei = this.energy[i];
+    if (ei > 0.12 && P.kick > 0) {
+      const i3 = i * 3;
+      const pulse = this.pulse;
+      const rx = this.curX - pulse[i3];
+      const ry = this.curY - pulse[i3 + 1];
+      const rz = this.curZ - pulse[i3 + 2];
+      const rd = Math.sqrt(rx * rx + ry * ry + rz * rz);
+      if (rd > 0.25) {
+        // Collapses need extra gain to beat the crowd pressure.
+        const gain =
+          this.pulseSign[i] > 0 ? TUNING.radialGainOut : TUNING.radialGainIn;
+        const f = (this.pulseSign[i] * ei * P.kick * gain) / rd;
+        this.curAX += rx * f;
+        this.curAY += ry * f;
+        this.curAZ += rz * f * 0.7;
+      }
+    }
+  }
+
+  /** Burst-and-glide gait: thrust, then coast. */
+  private gaitStep(i: number): void {
+    const P = this.params;
+    if (P.gait > 0.01) {
+      const gaitClock = this.gaitClock;
+      gaitClock[i] -= this.frDt * this.frGaitRate;
+      if (gaitClock[i] <= 0) {
+        gaitClock[i] = 0.35 + Math.random() * 1.1;
+        // Thrust along current motion, blended with the fish's heading
+        // (the turn wave's, so fish the front hasn't reached don't get
+        // thrust onto the new heading early).
+        let vx = this.curVX;
+        let vy = this.curVY;
+        let vz = this.curVZ;
+        const mhX = this.curMhX;
+        const mhY = this.curMhY;
+        const mhZ = this.curMhZ;
+        const dirSpeed = this.frDirSpeed;
+        const sp = Math.sqrt(vx * vx + vy * vy + vz * vz);
+        const blend = this.curMode === FLOCK ? dirSpeed * 1.2 : 0.2;
+        const dxT = (sp > 0.2 ? vx / sp : mhX) + mhX * blend;
+        const dyT = (sp > 0.2 ? vy / sp : mhY) + mhY * blend;
+        const dzT = (sp > 0.2 ? vz / sp : mhZ) + mhZ * blend;
+        const dl = Math.sqrt(dxT * dxT + dyT * dyT + dzT * dzT) || 1;
+        const imp =
+          P.gait * this.curSpdF * (0.4 + dirSpeed * 0.9 + this.curFear * 0.7) *
+          this.frMaxSpeedBase * 0.34;
+        vx += (dxT / dl) * imp;
+        vy += (dyT / dl) * imp;
+        vz += (dzT / dl) * imp * 0.7;
+        this.curVX = vx;
+        this.curVY = vy;
+        this.curVZ = vz;
+        const glow = this.glow;
+        if (imp > 0.35 && glow[i] < imp * 0.5) glow[i] = imp * 0.5;
+      }
+    }
+  }
+
+  /** Integrate: velocity under the speed cap, then position. */
+  private integrate(i: number): void {
+    const i3 = i * 3;
+    const dt = this.frDt;
+    const dragF = this.frDragF;
+    let vx = (this.curVX + (this.curAX + this.curPkX) * dt) * dragF;
+    let vy = (this.curVY + (this.curAY + this.curPkY) * dt) * dragF;
+    let vz = (this.curVZ + (this.curAZ + this.curPkZ) * dt) * dragF;
+
+    const sp2 = vx * vx + vy * vy + vz * vz;
+    // maxSpeed also feeds the steering targets; only the hard cap rises.
+    const cap =
+      this.curMaxSpeed * (1 + 0.8 * this.curRallyBoost) *
+      (this.curMode === WANDER ? 0.85 : 1) + 0.4;
+    if (sp2 > cap * cap) {
+      const f = cap / Math.sqrt(sp2);
+      vx *= f; vy *= f; vz *= f;
+    }
+
+    const vel = this.vel;
+    const pos = this.pos;
+    vel[i3] = vx;
+    vel[i3 + 1] = vy;
+    vel[i3 + 2] = vz;
+    pos[i3] = this.curX + vx * dt;
+    pos[i3 + 1] = this.curY + vy * dt;
+    pos[i3 + 2] = this.curZ + vz * dt;
+  }
+
+  /**
+   * Shear-triggered luminescence: agitation glows (like dinoflagellates
+   * firing when the water shears around them). Soft knee: steady cruising
+   * forces stay dark — only above-baseline acceleration (turn waves,
+   * thrusts, strikes) fires the light.
+   */
+  private shearGlow(i: number): void {
+    const ax = this.curAX;
+    const ay = this.curAY;
+    const az = this.curAZ;
+    const aMag = Math.sqrt(ax * ax + ay * ay + az * az);
+    const gTarget = Math.min(
+      1,
+      Math.max(0, aMag - TUNING.glowKnee) * TUNING.glowGain,
+    );
+    const glow = this.glow;
+    glow[i] += (gTarget - glow[i]) * this.frGlowK;
+  }
+
+  /** Flash bookkeeping, and fish i's share of the school-wide sums. */
+  private flashBookkeeping(i: number): void {
+    const energy = this.energy;
+    let e = energy[i] * this.frEnergyDecay;
+    if (e < 0.005) e = 0;
+    energy[i] = e;
+    if (this.fired[i] === 1 && e < TUNING.flashEndsBelow) {
+      this.fired[i] = 0;
+      this.refract[i] = this.params.refractory;
+    }
+
+    this.sumFear += this.curFear;
+    if (this.mode[i] === FLOCK) {
+      const pos = this.pos;
+      const i3 = i * 3;
+      const nx = pos[i3];
+      const ny = pos[i3 + 1];
+      const nz = pos[i3 + 2];
+      this.sumCX += nx;
+      this.sumCY += ny;
+      this.sumCZ += nz;
+      this.sumCN++;
+      // Spread about last frame's centroid (the GPU reduction's choice;
+      // the bias is negligible at swimming speed).
+      const sx = nx - this.frCenX;
+      const sy = ny - this.frCenY;
+      const sz = nz - this.frCenZ;
+      this.sumSpread += sx * sx + sy * sy + sz * sz;
+    }
+  }
+
+  // ---- Frame wrap-up ----
+
+  /** School-wide stats, crowd dim, uniforms and uploads. */
+  private endFrame(): void {
+    const P = this.params;
+    const cNum = this.sumCN;
     // Centroid used next frame by returning wanderers.
     if (cNum > 0) {
-      this.centroidX = cSumX / cNum;
-      this.centroidY = cSumY / cNum;
-      this.centroidZ = cSumZ / cNum;
-      this.rmsRadius = Math.sqrt(spreadSum / cNum);
+      this.centroidX = this.sumCX / cNum;
+      this.centroidY = this.sumCY / cNum;
+      this.centroidZ = this.sumCZ / cNum;
+      this.rmsRadius = Math.sqrt(this.sumSpread / cNum);
     } else {
       this.centroidX = this.centroidY = this.centroidZ = 0;
     }
-    this.meanFear = fearSum / Math.max(1, n);
+    this.meanFear = this.sumFear / Math.max(1, this.count);
 
-    this.updateCrowdFade(dt);
+    this.updateCrowdFade(this.frDt);
 
     // Push cheap uniforms every frame so panel tweaks apply instantly.
     const u = this.material.uniforms;
-    u.uTime.value = t;
+    u.uTime.value = this.frT;
     u.uSize.value = P.particleSize;
     u.uOpacity.value = P.opacity * this.opacityScale;
     u.uFlashBright.value = P.flashBrightness;

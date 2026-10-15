@@ -15,12 +15,15 @@
  * --watch <seconds> instead loads each count governed and prints the ?diag
  * overlay every 2 s (fps, late frames, count, meter, governor state);
  * --taps <from>-<to> taps the screen every 250 ms in that window (seconds).
+ * --script <file.js> instead runs that file's body as an async function on
+ * each count's page (after boot) and prints what it returns.
  *
  * The page must be served over HTTPS (WebGPU needs a secure context) and
  * carry this repo's __stages(). `xcrun devicectl list devices` lists UDIDs;
  * without --udid safaridriver picks the connected device.
  */
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).reduce((pairs, a, i, all) => {
@@ -84,7 +87,10 @@ for (let waited = 0; ; waited += 3) {
     break;
   } catch (err) {
     if (!/locked|not paired|could not be used/.test(String(err)) || waited >= 120) throw err;
-    if (waited === 0) console.log("waiting for the phone (unlock it, accept Trust if asked)...");
+    if (waited === 0) {
+      const why = /locked/.test(String(err)) ? "it's locked" : /not paired/.test(String(err)) ? "it isn't paired (accept Trust)" : "Safari is busy (force-quit it)";
+      console.log(`waiting for the phone: ${why}...`);
+    }
     await sleep(3000);
   }
 }
@@ -102,6 +108,24 @@ try {
   await call("POST", s("/timeouts"), { script: 180_000, pageLoad: 60_000 });
   const ua = await call("POST", s("/execute/sync"), { script: "return navigator.userAgent", args: [] });
   console.log(`device: ${ua}\n`);
+  if (args.script) {
+    const body = readFileSync(args.script, "utf8");
+    for (const count of counts) {
+      await call("POST", s("/url"), { url: `${base}/?count=${count}${extra}` });
+      const out = await call("POST", s("/execute/async"), {
+        script: `const done = arguments[arguments.length - 1];
+          navigator.wakeLock?.request("screen").catch(() => {});
+          const run = async () => { ${body} };
+          (function wait() {
+            if (!window.swarm) return setTimeout(wait, 250);
+            setTimeout(() => run().then(done, (e) => done("error: " + e)), 2000);
+          })();`,
+        args: [],
+      });
+      console.log(`--- ${count} fish${extra}\n${typeof out === "string" ? out : JSON.stringify(out, null, 1)}\n`);
+    }
+    counts.length = 0;
+  }
   if (watch > 0) {
     for (const count of counts) await watchCount(count);
     counts.length = 0;
@@ -201,7 +225,7 @@ async function watchCount(count) {
       });
       console.log(
         `${t.toFixed(0).padStart(3)} s  fps ${rows.fps}  late ${rows.late}  ${rows.particles}  ` +
-          `gpu ${rows.gpu}  ${rows.governor}`,
+          `${rows.gpu !== undefined ? "gpu" : "sim"} ${rows.gpu ?? rows.sim}  ${rows.governor}`,
       );
     }
     await sleep(250);
