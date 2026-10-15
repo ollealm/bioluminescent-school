@@ -467,7 +467,12 @@ presentation where no frame timing can see them. So a meter median over
 the whole budget (`OVER_SHARE`) now sheds on its own; the Mac agrees from
 the other side (200k: 14 ms against 8.3, stuttering; 160k: 6.5, clean).
 In the replay the measured iPhone goes 25k → 20k → 16k by 3.3 s, and the
-12k phone default is untouched.
+12k phone default is untouched. On the phone it reached 16k quickly and
+stayed smooth; hard tapping took it to 10.5k (once 8.5k), quick enough
+not to show. Growing back stays as it was (rarely, on a phone): a visit
+is short. 3x phones now render at 2x (`?dpr=3` to compare): at 3x the
+GPU filled 2.25x the pixels for the same sprites, and the earlier "2x
+reads soft" that set 3x (78ae36e) turned out to be something else.
 
 The points now accumulate into a half-float target with the same
 `SRC_ALPHA, ONE` blend, then resolve through the GPU's `fsTonemap`: the

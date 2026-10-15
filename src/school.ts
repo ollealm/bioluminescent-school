@@ -25,6 +25,7 @@ import type { Snapshot, SwarmSystem } from "./system";
  *   ?count=NNN         initial particle count (still governed)
  *   ?governOff         turn the adaptive count governor off (pin the count)
  *   ?diag              diagnostics overlay: backend, adapter, fps, count
+ *   ?dpr=N             render at up to N device pixels per CSS pixel (default 2)
  */
 
 interface App {
@@ -62,6 +63,11 @@ const forced = query.get("backend");
 const countOverride = Number(query.get("count")) || 0;
 // Flags are bare: ?diag, ?governOff, ?alive.
 const governOff = query.has("governOff");
+// Phones are 3x; they render at 2x. A 3x iPhone 13 Pro filled 2.25x the
+// pixels for sprites that read the same, and its GPU, not the sim, was
+// what shed the school (18.9 ms a frame at 20k). An earlier "2x reads
+// soft" turned out to be something else. ?dpr=3 to compare.
+const maxDpr = Number(query.get("dpr")) || 2;
 const diagnostics: Diagnostics | null =
   query.has("diag") ? installDiagnostics() : null;
 // Why the last boot didn't get WebGPU, for the diagnostics overlay.
@@ -319,10 +325,12 @@ window.addEventListener("blur", () => {
 // --- Resize ---
 function applySize(): void {
   if (!live || window.innerWidth < 1 || window.innerHeight < 1) return;
-  live.application.resize(
-    window.innerWidth,
-    window.innerHeight,
-    window.devicePixelRatio,
+  const dpr = Math.min(window.devicePixelRatio || 1, maxDpr);
+  live.application.resize(window.innerWidth, window.innerHeight, dpr);
+  diagnostics?.setResolution(
+    Math.floor(window.innerWidth * dpr),
+    Math.floor(window.innerHeight * dpr),
+    Math.round(dpr * 100) / 100,
   );
 }
 window.addEventListener("resize", applySize);

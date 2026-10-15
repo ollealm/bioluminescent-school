@@ -41,6 +41,8 @@ export interface Diagnostics {
   setFrames: (fps: number, lateShare: number, worstMs: number) => void;
   /** Live count, and the governor's target (null: not governed). */
   setCount: (count: number, target: number | null) => void;
+  /** Drawing-buffer size and the device pixel ratio it renders at. */
+  setResolution: (width: number, height: number, dpr: number) => void;
   /** The governor's view (null: ?governOff). */
   setGovernor: (status: GovernorStatus | null) => void;
 }
@@ -68,6 +70,7 @@ export function installDiagnostics(): Diagnostics {
   const [, fpsEl] = row("fps");
   const [, lateEl] = row("late");
   const [, countEl] = row("particles");
+  const [, resolutionEl] = row("pixels");
   const [meterLabel, meterEl] = row("gpu");
   const [, governorEl] = row("governor");
   document.body.appendChild(root);
@@ -91,6 +94,9 @@ export function installDiagnostics(): Diagnostics {
           : count < target
             ? `${fmt(count)} of ${fmt(target)}`
             : fmt(count);
+    },
+    setResolution: (width, height, dpr) => {
+      resolutionEl.textContent = `${width}×${height} · ${dpr}x`;
     },
     setGovernor: (status) => {
       if (!status) {
