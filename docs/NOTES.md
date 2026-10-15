@@ -470,9 +470,12 @@ In the replay the measured iPhone goes 25k → 20k → 16k by 3.3 s, and the
 12k phone default is untouched. On the phone it reached 16k quickly and
 stayed smooth; hard tapping took it to 10.5k (once 8.5k), quick enough
 not to show. Growing back stays as it was (rarely, on a phone): a visit
-is short. 3x phones now render at 2x (`?dpr=3` to compare): at 3x the
-GPU filled 2.25x the pixels for the same sprites, and the earlier "2x
-reads soft" that set 3x (78ae36e) turned out to be something else.
+is short. 3x phones now render at 2x (`?dpr=3` to compare): the earlier
+"2x reads soft" that set 3x (78ae36e) turned out to be something else,
+and on the 13 Pro 2x and 3x look and run the same. So the phone's GPU
+time is per-fish work (sim, grids, reductions), not fill: 18.9 ms at 20k
+there against 0.64 ms for the whole step at 25k on the M2 Max, a wider
+gap than the GPUs alone explain and the next thing to profile.
 
 The points now accumulate into a half-float target with the same
 `SRC_ALPHA, ONE` blend, then resolve through the GPU's `fsTonemap`: the

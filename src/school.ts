@@ -63,9 +63,9 @@ const forced = query.get("backend");
 const countOverride = Number(query.get("count")) || 0;
 // Flags are bare: ?diag, ?governOff, ?alive.
 const governOff = query.has("governOff");
-// Phones are 3x; they render at 2x. A 3x iPhone 13 Pro filled 2.25x the
-// pixels for sprites that read the same, and its GPU, not the sim, was
-// what shed the school (18.9 ms a frame at 20k). An earlier "2x reads
+// Phones are 3x; they render at 2x. On an iPhone 13 Pro the two look the
+// same and run the same (its GPU time is per-fish work, not pixels), so 2x
+// keeps the smaller buffers and the power they save. An earlier "2x reads
 // soft" turned out to be something else. ?dpr=3 to compare.
 const maxDpr = Number(query.get("dpr")) || 2;
 const diagnostics: Diagnostics | null =
