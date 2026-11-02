@@ -46,7 +46,12 @@ export interface SchoolOptions {
   /** Selector for the page's own UI: a pointerdown inside it never bursts
    * the school. The dev panel is always excluded. */
   ignore?: string;
+  /** Called when a visitor sets something off: a click's light cascade
+   * ("burst") or a pointer flick ("strike"). Probes never report. */
+  onEvent?: (event: SchoolEvent) => void;
 }
+
+export type SchoolEvent = "burst" | "strike";
 
 /** Everything that belongs to one backend instance and is rebuilt on re-mount. */
 interface Mounted {
@@ -60,6 +65,7 @@ interface Mounted {
 let app: HTMLElement;
 let backendTag: HTMLElement | null = null;
 let ignoreSelector = ".blm-panel, .blm-toggle";
+let onEvent: ((event: SchoolEvent) => void) | null = null;
 
 const query = new URLSearchParams(location.search);
 const forced = query.get("backend");
@@ -213,6 +219,9 @@ async function mountBackend(
   }
 
   const { system } = application;
+  system.onStrike = () => {
+    if (pauseDepth === 0) onEvent?.("strike");
+  };
   if (backendTag) backendTag.textContent = `v4 · ${label}`;
   const gpu = label === "webgpu";
   diagnostics?.setBackend(gpu ? "gpu · webgpu" : "cpu · three.js", detail, gpu);
@@ -314,7 +323,9 @@ window.addEventListener("pointerdown", (e) => {
   // Clicks on the panel shouldn't detonate the swarm.
   if ((e.target as HTMLElement).closest?.(ignoreSelector)) return;
   live?.system.updateMousePosition(toNDC(e));
-  live?.system.burst();
+  if (!live) return;
+  live.system.burst();
+  onEvent?.("burst");
 });
 
 document.documentElement.addEventListener("mouseleave", () => {
@@ -457,6 +468,7 @@ export function mountSchool(options: SchoolOptions = {}): Promise<void> {
   backendTag =
     options.backendTag !== undefined ? options.backendTag : document.getElementById("backend-tag");
   if (options.ignore) ignoreSelector += `, ${options.ignore}`;
+  onEvent = options.onEvent ?? null;
   // A tab can boot with zero layout (hidden tab, display:none embed) and
   // never receive a window resize — watch the container for its first real
   // size instead of trusting boot-time innerWidth.

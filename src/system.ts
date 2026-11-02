@@ -69,6 +69,8 @@ export interface SwarmSystem {
   scatter(): void;
   /** A false alarm — a pocket of panic sweeps the school. */
   startle(): void;
+  /** Called when a pointer flick sets off a strike. */
+  onStrike: (() => void) | null;
 
   /** Advance the simulation by dt seconds (already frame-clamped upstream). */
   update(dt: number): void;

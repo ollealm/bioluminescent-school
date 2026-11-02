@@ -46,6 +46,13 @@ import { mountSchool } from "bioluminescent-school";
 mountSchool({ ignore: "#nav" });
 ```
 
+`onEvent` reports what a visitor sets off, a click's light cascade
+(`"burst"`) or a pointer flick (`"strike"`), for analytics of your own:
+
+```ts
+mountSchool({ onEvent: (event) => console.log(event) });
+```
+
 Give the container `position: fixed; inset: 0`, and tell Vite to
 transform the package rather than pre-bundle it (it uses
 `import.meta.glob` for its feels):

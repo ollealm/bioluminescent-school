@@ -212,6 +212,7 @@ export class GpuSwarm implements SwarmSystem {
   private evadeZ = 0;
 
   // Strike (flick) detection.
+  onStrike: (() => void) | null = null;
   private strikeCooldown = 0;
   private lastSlowTime = 0;
 
@@ -1300,6 +1301,7 @@ export class GpuSwarm implements SwarmSystem {
       this.strikeCooldown <= 0
     ) {
       this.strikeCooldown = GPU_TUNING.strikeCooldown;
+      this.onStrike?.();
       this.pending.push({
         kind: EV_STRIKE,
         center: [tpx, tpy, tpz],

@@ -351,6 +351,7 @@ export class ParticleSystem implements SwarmSystem {
   private evadeZ = 0;
 
   // Strike (flick) detection.
+  onStrike: (() => void) | null = null;
   private strikeCooldown = 0;
   private lastSlowTime = 0;
 
@@ -2140,6 +2141,7 @@ export class ParticleSystem implements SwarmSystem {
       this.strikeCooldown <= 0
     ) {
       this.strikeCooldown = GPU_TUNING.strikeCooldown;
+      this.onStrike?.();
       this.strike(tpx, tpy, tpz, vhx, vhy, vhz);
     }
   }
