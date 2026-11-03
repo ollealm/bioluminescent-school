@@ -43,11 +43,12 @@ export interface SchoolOptions {
   container?: HTMLElement;
   /** Element that shows the backend label ("v4 · webgpu"), if any. Default `#backend-tag`. */
   backendTag?: HTMLElement | null;
-  /** Selector for the page's own UI: a pointerdown inside it never bursts
+  /** Selector for the page's own UI: a pointerdown inside it never reaches
    * the school. The dev panel is always excluded. */
   ignore?: string;
-  /** Called when a visitor sets something off: a click's light cascade
-   * ("burst") or a pointer flick ("strike"). Probes never report. */
+  /** Called when a visitor sets something off: a click ("burst": the lure,
+   * or the CPU fallback's light cascade) or a pointer flick ("strike").
+   * Probes never report. */
   onEvent?: (event: SchoolEvent) => void;
 }
 
@@ -324,7 +325,8 @@ window.addEventListener("pointerdown", (e) => {
   if ((e.target as HTMLElement).closest?.(ignoreSelector)) return;
   live?.system.updateMousePosition(toNDC(e));
   if (!live) return;
-  live.system.burst();
+  if (live.system.lure) live.system.lure();
+  else live.system.burst();
   onEvent?.("burst");
 });
 

@@ -262,6 +262,67 @@ export const GPU_TUNING = {
    * (2.6-4 s)/tempo duration, so the whole school turns before cruise.
    */
   turnWaveSpeed: 3.2,
+  /**
+   * The lure (owner's ask: a click is curiosity, not a scare, and subtle).
+   * Each click raises the school's interest (lureGain of what is left to
+   * 1; it fades with time constant lureHold s, so it only holds while
+   * someone keeps clicking) and sends an unseen notice wave out from the
+   * click at lureWaveSpeed u/s. The first fish it reaches whose own
+   * curiosity threshold sits below the interest dart over, until lureBase
+   * are curious, plus lureStep per further click while the interest holds,
+   * so only steady clicking gathers more than a handful (lureInside times
+   * as many at the school's core, where a handful is lost). A fish loses
+   * interest when the interest fades below lureLeave × its threshold:
+   * 1-3 s after the last click.
+   */
+  lureGain: 0.22,
+  lureHold: 1.3,
+  lureWaveSpeed: 20,
+  lureBase: 6,
+  lureStep: 0.3,
+  lureInside: 3,
+  lureLeave: 0.45,
+  /** Lured fish hold off the click point by 0.6 + lureStandoff·h u (h a
+   * per-fish draw), plus up to lureFar u while the interest is below
+   * lureClose: one click brings them part way, steady clicking brings them
+   * close, and as the interest fades they drift back before they leave.
+   * They swim at lureSpeedStart × maxSpeed after one click (cruise is
+   * ~0.6×), rising to lureSpeed × as the interest reaches lureFastAt
+   * (~4 steady clicks; steady clicking holds the interest near 0.5). */
+  lureStandoff: 0.8,
+  /** The standoff's scale at the school's core (1 off it): the cursor
+   * keeps a hollow ~0.8 u wide there, and lookers at the usual standoff
+   * line its rim, lost in the wall. */
+  lureInsideNear: 0.3,
+  lureFar: 4,
+  lureClose: 0.35,
+  lureSpeedStart: 0.45,
+  lureSpeed: 1.4,
+  lureFastAt: 0.4,
+  lurePull: 6,
+  /** Lured fish ignore the cursor as a predator until it moves more than
+   * this many CSS px from the last click: they came to look at it, and a
+   * hand never holds a cursor quite still. Once it moves off, it is a
+   * predator again until the next click. */
+  lureStillPx: 6,
+  /**
+   * The click's light: a spark leaves the click toward the school (within
+   * ±sparkSpread rad of its center), travels at sparkSpeed u/s with a slow
+   * meander, and fish within sparkRadius of it flash with probability
+   * sparkP per frame (about a quarter of the fish it passes): a thin line
+   * of single flashes running through the school in one direction. Its
+   * flashes don't spread (no bubble, no contagion) and part the fish only
+   * sparkDart u/s off its path. It ends
+   * sparkBeyond × the school's RMS radius past the school's center. (The
+   * first lure seeded the click burst instead, which read as a big ring;
+   * a fish-to-fish chain either died within a few fish or flared.)
+   */
+  sparkSpeed: 9,
+  sparkSpread: 0.5,
+  sparkRadius: 0.4,
+  sparkP: 0.06,
+  sparkDart: 0.8,
+  sparkBeyond: 1.2,
   /** Compute workgroup size for the per-particle kernels. */
   workgroupSize: 64,
   /** Max host→GPU events applied per frame (burst/startle/vanguard/...). */

@@ -349,6 +349,58 @@ settled lower (evade 0.2, bite 0.3, mouseRadius 1.7: a full-strength push
 felt like too much displacement); `snapshots/olle-work.json` is the
 current truth.
 
+### Round ten — the click is a lure
+
+The click used to set off a burst at the cursor: a small ring of light
+the owner hadn't noticed was there. Brief: *"a few fish get interested,
+and if one keeps clicking they keep the interest up, if one stops
+clicking they lose interest"*; subtle, working fairly far from the school;
+later *"I like it when a small group of fish comes, and gets closer the
+more I click. Then more fish don't need to come."*
+
+- **Interest** is one host scalar: each click adds `lureGain` of what is
+  left to 1, and it fades with a 1.3 s time constant, so steady clicking
+  holds it near 0.5 and fish leave 1–3 s after the last click. Each fish
+  has a static curiosity threshold (0.06–0.66); it joins only while the
+  interest is above it and leaves below 0.45× it, so the keenest come
+  first and stay longest.
+- **Recruitment** is an unseen notice wave from the click (20 u/s), and
+  an atomic counter takes the first fish it reaches. A click *tops the
+  group up* to `lureBase` (6) plus `lureStep` (0.3) per further click,
+  against a per-frame count of curious fish read back with the
+  centroid. Adding per click instead (the first version) drew nobody on
+  some clicks after the earlier fish had left, which read as "sometimes
+  nothing happens".
+- **Approach.** Lookers hold off at their own standoff, which shrinks
+  from ~3 u after one click to ~1.5 u as the interest rises, so more clicking brings the
+  same few closer rather than more fish. Their speed rises with it too,
+  0.45× to 1.4× maxSpeed. They are drawn hard (`lurePull` 6): with the
+  plain steering force they took several seconds to arrive.
+- **The school doesn't follow.** A handful of informed fish steers a
+  whole school (the leadership effect is real, and it showed: with
+  recruitment the school's median distance to the cursor fell from
+  ~12 u to ~8 u). While a lure is out, lookers and the school leave each
+  other out of cohesion and alignment; separation still applies.
+- **Inside the school** a handful vanished among the rest, and they
+  stopped on the rim of the hollow the cursor keeps, lost in its wall.
+  The first click of a run decides by its depth in the school: at the
+  core up to 3× as many come (18–26) and their standoff scales to 0.3,
+  into the hollow. Deciding per click made a school drifting under a
+  clicking cursor swell the group to 20 at its edge.
+- **Scare.** Lookers ignore the cursor as a predator until it moves more
+  than 6 CSS px from the last click; then it is a predator again. A
+  speed guard (1.5 u/s, later 6) first made them flee a resting hand's
+  jitter, then hardly at all.
+- **Light.** The burst's ring is gone. A fish-to-fish chain in one
+  direction died after 1–7 fish or flared, so the spark is a host-driven
+  point running from the click into the school at 9 u/s on a gently
+  curving path; fish it passes flash once with a small dart
+  (`sparkP` 0.06: ~150 fish over its run, 40–75 lit at once; at 0.5 it
+  lit ~350 at once and read as a beam). Spark flashes neither spread
+  nor push a bubble.
+
+The CPU fallback still answers a click with the burst.
+
 ## 3. The CPU port
 
 Olle found the no-WebGPU path was used more than expected and wanted it to

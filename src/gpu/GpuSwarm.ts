@@ -60,6 +60,8 @@ const MAX_EVENTS = GPU_TUNING.maxEvents;
 const EVENT_STRIDE = 16; // floats/u32s per event (4 × vec4)
 const WG = GPU_TUNING.workgroupSize;
 const REDUCE_WGS = 64;
+/** Clears the lure's per-frame count of curious fish. */
+const LURE_POP_ZERO = new Uint32Array(1);
 
 interface PendingEvent {
   kind: number;
@@ -128,6 +130,8 @@ export class GpuSwarm implements SwarmSystem {
   private eventsB!: GPUBuffer;
   private uniformsB!: GPUBuffer;
   private centroidB!: GPUBuffer;
+  /** Fish recruited by the current lure click (atomic u32, reset per click). */
+  private lureCountB!: GPUBuffer;
   private parity = 0; // dyn[parity] is the read side this frame
 
   private scanLayout!: GPUBindGroupLayout;
@@ -204,6 +208,36 @@ export class GpuSwarm implements SwarmSystem {
   private hasPrevNDC = false;
 
   private wanderClock = 5;
+
+  // The lure (GPU-only): where the last click was, how interested the
+  // school still is, and the notice wave looking for curious fish.
+  private lureX = 0;
+  private lureY = 0;
+  private lureZ = 0;
+  private lureInterest = 0;
+  /** Notice wave radius; < 0 = no wave out. */
+  private lureWaveR = -1;
+  private lureTarget = 0;
+  /** Standoff scale for the current click: 1 off the school, lureInsideNear at its core. */
+  private lureNear = 1;
+  /** How deep in the school the first click of this run of clicks was (0-1). */
+  private lureCore = 0;
+  /** The cursor hasn't moved off the last click (lureStillPx); until it
+   * does, lured fish don't fear it. */
+  private lureStill = false;
+  private lureNDC = { x: 0, y: 0 };
+  /** Half the canvas in CSS px, to measure the cursor's move in px. */
+  private viewHalf = { x: 1, y: 1 };
+  /** Fish curious right now (readback, 1-2 frames stale). */
+  private lurePop = 0;
+  /** Clicks since interest last lapsed. */
+  private lureClicks = 0;
+  // The click's spark: position, heading (xy) and distance left to run.
+  private sparkX = 0;
+  private sparkY = 0;
+  private sparkZ = 0;
+  private sparkAngle = 0;
+  private sparkLeft = 0;
 
   // Evade: smoothed displacement of the school's center away from a parked
   // predator (stays zero at evade 0).
@@ -520,6 +554,9 @@ export class GpuSwarm implements SwarmSystem {
       this.rmsRadius = this.nominalRmsRadius();
       this.meanFear = 0;
       this.evadeX = this.evadeY = this.evadeZ = 0;
+      this.lureInterest = this.lureTarget = 0;
+      this.lureWaveR = -1;
+      this.sparkLeft = 0;
       return;
     }
     this.destroyBuffers();
@@ -554,6 +591,7 @@ export class GpuSwarm implements SwarmSystem {
     // [0] centroid+flockN, [1] stats (Σ|vel|, hotGlow, Σ|pos−cen|², 0),
     // then 2×64 partial blocks.
     this.centroidB = mkStorage(16 * (2 + 2 * REDUCE_WGS), "centroid");
+    this.lureCountB = mkStorage(16, "lureCount");
     this.uniformsB = dev.createBuffer({
       label: "uniforms",
       size: this.uniforms.byteLength,
@@ -563,7 +601,7 @@ export class GpuSwarm implements SwarmSystem {
     this.staging = Array.from({ length: 3 }, (_, k) => ({
       buf: dev.createBuffer({
         label: `centroid-staging-${k}`,
-        size: 32,
+        size: 48,
         usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
       }),
       state: "free" as const,
@@ -577,6 +615,9 @@ export class GpuSwarm implements SwarmSystem {
     this.rmsRadius = this.nominalRmsRadius();
     this.meanFear = 0;
     this.evadeX = this.evadeY = this.evadeZ = 0;
+    this.lureInterest = this.lureTarget = 0;
+    this.lureWaveR = -1;
+    this.sparkLeft = 0;
     this.generation++;
   }
 
@@ -788,6 +829,7 @@ export class GpuSwarm implements SwarmSystem {
         this.gridData,
         this.eventsB,
         this.centroidB,
+        this.lureCountB,
       ]),
       reduce: both(p.reduce1, (_dynIn, dynOut) => [
         this.uniformsB,
@@ -812,6 +854,7 @@ export class GpuSwarm implements SwarmSystem {
       this.eventsB,
       this.uniformsB,
       this.centroidB,
+      this.lureCountB,
       ...this.staging.map((s) => s.buf),
     ]) {
       b?.destroy();
@@ -837,6 +880,11 @@ export class GpuSwarm implements SwarmSystem {
     }
     this.prevNDC = { x: ndc.x, y: ndc.y };
     this.lastPointerTime = now;
+    if (this.lureStill) {
+      const mx = (ndc.x - this.lureNDC.x) * this.viewHalf.x;
+      const my = (ndc.y - this.lureNDC.y) * this.viewHalf.y;
+      if (Math.hypot(mx, my) > GPU_TUNING.lureStillPx) this.lureStill = false;
+    }
     this.hasPrevNDC = true;
     this.pointerActive = true;
 
@@ -857,6 +905,7 @@ export class GpuSwarm implements SwarmSystem {
   }
 
   updateRendererSize(halfX: number, halfY: number): void {
+    this.viewHalf = { x: halfX, y: halfY };
     this.camera.setAspect(halfX / Math.max(1, halfY));
   }
 
@@ -875,6 +924,52 @@ export class GpuSwarm implements SwarmSystem {
       center: [c.x, c.y, c.z],
       radius: Math.max(2, this.params.mouseRadius * TUNING.burstSeedRatio),
     });
+  }
+
+  lure(): void {
+    const c = this.pointerActive ? this.pointer : { x: 0, y: 0, z: 0 };
+    this.lureX = c.x;
+    this.lureY = c.y;
+    this.lureZ = c.z;
+    this.lureStill = this.pointerActive;
+    this.lureNDC = { ...this.prevNDC };
+    const cen = this.centroid;
+    const dx = cen.x - c.x;
+    const dy = cen.y - c.y;
+    const d = Math.hypot(dx, dy);
+    const inside = d < this.rmsRadius * 0.6;
+    // A click tops the curious up to lureBase, plus lureStep per click
+    // while someone keeps clicking. Topping up rather than adding keeps a
+    // click from drawing nobody once the last ones have lost interest.
+    // Inside the school a handful is lost among the rest, so up to
+    // lureInside times as many come, the most at its core.
+    // The first click of a run decides, so a school drifting under a
+    // clicking cursor doesn't swell the group.
+    if (this.lureInterest < 0.05) {
+      this.lureClicks = 0;
+      this.lureCore = Math.max(0, Math.min(1, 1.5 - d / this.rmsRadius));
+    }
+    this.lureClicks++;
+    const core = this.lureCore;
+    const want = (GPU_TUNING.lureBase + GPU_TUNING.lureStep * (this.lureClicks - 1))
+      * (1 + (GPU_TUNING.lureInside - 1) * core);
+    this.lureTarget = Math.max(0, Math.floor(want + Math.random()) - this.lurePop);
+    // There they also come right in, into the hollow the cursor keeps:
+    // at the usual standoff they line its rim and vanish into the wall.
+    this.lureNear = 1 - (1 - GPU_TUNING.lureInsideNear) * core;
+    this.lureInterest += GPU_TUNING.lureGain * (1 - this.lureInterest);
+    // A fresh notice wave: the first fish it reaches may get curious.
+    this.lureWaveR = 0;
+    this.device.queue.writeBuffer(this.lureCountB, 0, new Uint32Array(4));
+    // The spark heads for the school, off its center by up to sparkSpread,
+    // and runs out past it. From inside the school it picks any heading.
+    this.sparkAngle = inside
+      ? Math.random() * Math.PI * 2
+      : Math.atan2(dy, dx) + (Math.random() * 2 - 1) * GPU_TUNING.sparkSpread;
+    this.sparkX = c.x;
+    this.sparkY = c.y;
+    this.sparkZ = cen.z;
+    this.sparkLeft = (inside ? 0 : d) + this.rmsRadius * GPU_TUNING.sparkBeyond;
   }
 
   scatter(): void {
@@ -1396,6 +1491,23 @@ export class GpuSwarm implements SwarmSystem {
       spontAcc -= 1;
     }
 
+    // The lure: interest fades, the notice wave spreads until it has
+    // crossed the scene.
+    this.lureInterest *= Math.exp(-dt / GPU_TUNING.lureHold);
+    if (this.lureInterest < 0.01) this.lureInterest = 0;
+    if (this.sparkLeft > 0) {
+      // A slow meander, so the line isn't ruled straight.
+      this.sparkAngle += Math.sin(t * 2.3 + this.sparkLeft) * 0.5 * dt;
+      const step = GPU_TUNING.sparkSpeed * dt;
+      this.sparkX += Math.cos(this.sparkAngle) * step;
+      this.sparkY += Math.sin(this.sparkAngle) * step;
+      this.sparkLeft -= step;
+    }
+    if (this.lureWaveR >= 0) {
+      this.lureWaveR += GPU_TUNING.lureWaveSpeed * dt;
+      if (this.lureWaveR > P.containRadius * 5) this.lureWaveR = -1;
+    }
+
     // Occasionally a small group breaks away.
     if (P.wanderRate > 0.001) {
       this.wanderClock -= dt;
@@ -1486,12 +1598,24 @@ export class GpuSwarm implements SwarmSystem {
     U[73] = cen.y + this.evadeY;
     U[74] = cen.z + this.evadeZ;
     U[75] = P.sheet ?? 0;
+    U[76] = this.lureX;
+    U[77] = this.lureY;
+    U[78] = this.lureZ;
+    U[79] = this.lureInterest;
     U[80] = this.turnOldX;
     U[81] = this.turnOldY;
     U[82] = this.turnOldZ;
     U[83] = this.turnRadius;
     U[84] = this.turnIndex;
     U[85] = this.turnActive;
+    U[86] = this.lureWaveR;
+    U[87] = this.lureTarget;
+    U[88] = this.sparkX;
+    U[89] = this.sparkY;
+    U[90] = this.sparkZ;
+    U[91] = this.sparkLeft > 0 ? GPU_TUNING.sparkRadius : 0;
+    U[92] = this.lureNear;
+    U[93] = this.lureStill ? 1 : 0;
 
     // ---- Pack events ----
     const batch = this.pending.splice(0, MAX_EVENTS);
@@ -1523,6 +1647,7 @@ export class GpuSwarm implements SwarmSystem {
     const q = this.device.queue;
     q.writeBuffer(this.uniformsB, 0, U);
     q.writeBuffer(this.eventsB, 0, this.eventData);
+    q.writeBuffer(this.lureCountB, 8, LURE_POP_ZERO);
 
     // ---- Encode the frame ----
     const g = this.groups;
@@ -1555,6 +1680,7 @@ export class GpuSwarm implements SwarmSystem {
     const st = this.staging[this.frame % 3];
     if (st && st.state === "free") {
       enc.copyBufferToBuffer(this.centroidB, 0, st.buf, 0, 32);
+      enc.copyBufferToBuffer(this.lureCountB, 0, st.buf, 32, 16);
       st.state = "pending";
     }
     q.submit([enc.finish()]);
@@ -1573,6 +1699,7 @@ export class GpuSwarm implements SwarmSystem {
           this.rmsRadius = Math.sqrt(Math.max(0, v[6]) / Math.max(1, v[3]));
           // [1].w = Σfear over active fish.
           this.meanFear = v[7] / Math.max(1, this.count);
+          this.lurePop = new Uint32Array(v.buffer, 32, 4)[2];
           st.buf.unmap();
           st.state = "free";
         })

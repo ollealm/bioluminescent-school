@@ -65,6 +65,10 @@ export interface SwarmSystem {
 
   /** Detonate a chain reaction at `at`, else the pointer (or swarm center). */
   burst(at?: { x: number; y: number; z: number }): void;
+  /** A visitor's click at the pointer: a few curious fish dart over, and a
+   * spark runs from the click through the school. Backends without it get
+   * burst(). */
+  lure?(): void;
   /** Blow the whole swarm apart; it will drift back and reunite. */
   scatter(): void;
   /** A false alarm — a pocket of panic sweeps the school. */

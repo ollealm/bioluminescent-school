@@ -42,12 +42,12 @@ npm install github:ollealm/bioluminescent-school#v4.1.0
 import { mountSchool } from "bioluminescent-school";
 
 // Mounts into #app by default. `ignore` names your own UI, so clicks
-// on it never set off a light cascade.
+// on it never reach the school.
 mountSchool({ ignore: "#nav" });
 ```
 
-`onEvent` reports what a visitor sets off, a click's light cascade
-(`"burst"`) or a pointer flick (`"strike"`), for analytics of your own:
+`onEvent` reports what a visitor sets off, a click (`"burst"`) or a
+pointer flick (`"strike"`), for analytics of your own:
 
 ```ts
 mountSchool({ onEvent: (event) => console.log(event) });
@@ -72,7 +72,11 @@ the CPU fallback.
 ## Controls
 
 - **Move the pointer** through the school to hunt it; a fast flick from
-  rest is a *strike*. **Click** sets off a light cascade.
+  rest is a *strike*. **Click** is a lure: a few curious fish come
+  over, more and faster the longer you keep clicking, and a spark of
+  light runs from the click through the school. They lose interest 1–3 s
+  after the last click, and flee once the cursor moves off it. (The CPU
+  fallback answers a click with a light cascade.)
 - **D** opens the dev panel: presets, palettes, every slider, mood pins,
   and *Save feel…*.
 - URL parameters: `?feel=<name>` boots a feel (default `olle-work`, the
@@ -133,7 +137,10 @@ tonemap, so dense cores saturate as the palette color instead of white.
 recruitment, scatter, strike, shiver, spontaneous ignitions) travel through a
 16-slot event queue. Events that need a fish's position as their epicenter
 carry a particle index; a one-workgroup resolve pre-pass fills in the
-position on the GPU, so scheduling never waits on a readback.
+position on the GPU, so scheduling never waits on a readback. The click
+lure is not an event: its interest, notice wave and spark are uniforms,
+and an atomic counter recruits its fish and reads back how many are
+still curious.
 
 **Degrading.** Smooth comes first: a governor cuts the count by a fifth
 (floor 8,000) as soon as a second of frames keeps missing vsync (over 4%,

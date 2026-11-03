@@ -29,10 +29,17 @@ export interface FilmstripOptions {
   cols?: number;
   /** Tile size as a fraction of the canvas pixel size. */
   scale?: number;
+  /** Film only a window of the canvas: center in NDC, width as a fraction
+   * of the canvas (the height keeps the canvas aspect). For small effects,
+   * such as a few lured fish, that full-frame tiles shrink to dots. */
+  crop?: { x: number; y: number; w: number };
   /** Scripted pointer, linearly interpolated at ~60 Hz. */
   path?: FilmstripPoint[];
   /** Seconds at which to call `swarm.burst()`. */
   click?: number[];
+  /** Seconds at which to call `swarm.lure()`, a visitor's click (falls
+   * back to burst() on a backend without it). */
+  lure?: number[];
   label?: string;
 }
 
@@ -65,6 +72,7 @@ interface LooseSwarm {
   updateMousePosition: (ndc: { x: number; y: number }) => void;
   clearPointer: () => void;
   burst: () => void;
+  lure?: () => void;
 }
 
 type Win = Window & { swarm?: LooseSwarm; __render?: () => void; __keepAlive?: boolean };
@@ -198,9 +206,16 @@ async function filmstrip(opts: FilmstripOptions): Promise<FilmstripResult> {
   const scale = num(opts.scale, 0.3) > 0 ? num(opts.scale, 0.3) : 0.3;
   const path = [...(opts.path ?? [])].sort((a, b) => a.t - b.t);
   const clicks = opts.click ?? [];
+  const lures = opts.lure ?? [];
 
-  const tw = Math.max(1, Math.round(source.width * scale));
-  const th = Math.max(1, Math.round(source.height * scale));
+  // Source window in canvas pixels (the whole canvas without a crop).
+  const cw = opts.crop ? Math.min(1, Math.max(0.05, opts.crop.w)) : 1;
+  const sw = source.width * cw;
+  const sh = source.height * cw;
+  const sx = opts.crop ? ((opts.crop.x + 1) / 2) * source.width - sw / 2 : 0;
+  const sy = opts.crop ? ((1 - opts.crop.y) / 2) * source.height - sh / 2 : 0;
+  const tw = Math.max(1, Math.round(sw * scale));
+  const th = Math.max(1, Math.round(sh * scale));
   const header = opts.label ? HEADER_PX : 0;
   const strip = document.createElement("canvas");
   strip.width = cols * tw + (cols - 1);
@@ -268,7 +283,7 @@ async function filmstrip(opts: FilmstripOptions): Promise<FilmstripResult> {
     const row = Math.floor(i / cols);
     const ox = col * (tw + 1);
     const oy = header + row * (th + 1);
-    ctx.drawImage(source, 0, 0, source.width, source.height, ox, oy, tw, th);
+    ctx.drawImage(source, sx, sy, sw, sh, ox, oy, tw, th);
     // Stats before any overlay so the stamp and pointer ring aren't counted.
     const { maxValue, ...s } = tileStats(ctx.getImageData(ox, oy, tw, th));
     if (maxValue === 0) blank.push(i);
@@ -278,8 +293,8 @@ async function filmstrip(opts: FilmstripOptions): Promise<FilmstripResult> {
 
     if (pointerActive && trail.length) {
       const toTile = (p: { x: number; y: number }): [number, number] => [
-        ox + ((p.x + 1) / 2) * tw,
-        oy + ((1 - p.y) / 2) * th,
+        ox + ((((p.x + 1) / 2) * source.width - sx) / sw) * tw,
+        oy + ((((1 - p.y) / 2) * source.height - sy) / sh) * th,
       ];
       ctx.save();
       ctx.beginPath();
@@ -322,6 +337,10 @@ async function filmstrip(opts: FilmstripOptions): Promise<FilmstripResult> {
       }
       for (const s of clicks) {
         if (Number.isFinite(s)) timers.push(window.setTimeout(guarded(() => swarm.burst()), s * 1000));
+      }
+      for (const s of lures) {
+        const lure = () => (swarm.lure ? swarm.lure() : swarm.burst());
+        if (Number.isFinite(s)) timers.push(window.setTimeout(guarded(lure), s * 1000));
       }
       for (let i = 0; i < frames; i++) {
         timers.push(

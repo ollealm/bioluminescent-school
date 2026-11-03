@@ -33,15 +33,21 @@ import { GPU_TUNING, TUNING } from "../params";
  *   U[18] evadeCenter.xyz, sheet        (centroid shifted off the predator,
  *                                        read only at evade > 0; sheet 0 =
  *                                        v3 kernel)
- *   U[19] unused
+ *   U[19] lure.xyz, interest            (the click lure; interest 0 =
+ *                                        nobody curious)
  *   U[20] turnOldHead.xyz, turnRadius   (turn wave: fish beyond turnRadius
- *   U[21] turnIndex, turnActive, -, -    of the vanguard fish keep the old
- *                                        heading; turnActive 0 = everyone on
- *                                        head)
+ *   U[21] turnIndex, turnActive,          of the vanguard fish keep the old
+ *         lureWaveR, lureTarget          heading; turnActive 0 = everyone on
+ *                                        head. Lure notice wave: radius
+ *                                        (< 0 = no wave) and recruits wanted)
+ *   U[22] spark.xyz, sparkRadius         (the click's light; 0 = no spark)
+ *   U[23] lureNear, lureStill, 0, 0     (lure standoff scale: 1 off the
+ *                                        school, less at its core; still 1 =
+ *                                        the cursor hasn't left the click)
  */
 
-/** Uniform array length in vec4s (88 floats). Shared with GpuSwarm.ts. */
-export const U_VEC4S = 22;
+/** Uniform array length in vec4s (96 floats). Shared with GpuSwarm.ts. */
+export const U_VEC4S = 24;
 
 const D = TUNING.gridDim;
 
@@ -133,6 +139,7 @@ const WEDGE_SPEED_REF: f32 = ${GPU_TUNING.wedgeSpeedRef};
 const FLOCK: u32 = 0u;
 const WANDER: u32 = 1u;
 const RETURN_: u32 = 2u;
+const LURE: u32 = 3u;
 
 // Event kinds (match EventKind in GpuSwarm.ts).
 const EV_BURST: u32 = 1u;
@@ -501,12 +508,33 @@ ${WGSL_COMMON}
 @group(0) @binding(5) var<storage, read> gridData: array<u32>;
 @group(0) @binding(6) var<storage, read> events: array<Ev>;
 @group(0) @binding(7) var<storage, read> centroid: array<vec4f>;
+// The lure's counters: [0] fish recruited by the current click (reset per
+// click), [2] fish curious this frame (reset per frame, read back).
+@group(0) @binding(8) var<storage, read_write> lureCount: array<atomic<u32>>;
+
+const LURE_STANDOFF: f32 = ${GPU_TUNING.lureStandoff};
+const LURE_SPEED: f32 = ${GPU_TUNING.lureSpeed};
+const LURE_SPEED_START: f32 = ${GPU_TUNING.lureSpeedStart};
+const LURE_FAST_AT: f32 = ${GPU_TUNING.lureFastAt};
+const LURE_PULL: f32 = ${GPU_TUNING.lurePull};
+const LURE_LEAVE: f32 = ${GPU_TUNING.lureLeave};
+const LURE_FAR: f32 = ${GPU_TUNING.lureFar};
+const LURE_CLOSE: f32 = ${GPU_TUNING.lureClose};
+const SPARK_P: f32 = ${GPU_TUNING.sparkP};
+const SPARK_DART: f32 = ${GPU_TUNING.sparkDart};
+// pulseSign of a spark flash: it neither spreads nor pushes a bubble.
+const SPARK_SIGN: f32 = 2.0;
 
 const OFFS = array<vec3i, 27>(${offsets27()});
 
 fn rnd(i: u32, salt: u32) -> f32 {
   let frame = u32(U[0].z);
   return f32(pcg(i + pcg(salt + pcg(frame)))) * 2.3283064365386963e-10;
+}
+
+// A static per-fish draw in [0, 1): the same every frame (rnd() is not).
+fn fishHash(i: u32, salt: u32) -> f32 {
+  return f32(pcg(i * 0x9e3779b9u + pcg(salt))) * 2.3283064365386963e-10;
 }
 
 fn clampLen(v: vec3f, m: f32) -> vec3f {
@@ -631,6 +659,13 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
   let turnR = U[20].w;
   let turnIdx = u32(U[21].x);
   let turnOn = U[21].y > 0.5 && turnIdx < n;
+  let lureP = U[19].xyz;
+  let lureInterest = U[19].w;
+  let lureWaveR = U[21].z;
+  let lureTarget = U[21].w;
+  // Lookers come slowly after one click, faster the more clicks follow.
+  let lureSpd = mix(LURE_SPEED_START, LURE_SPEED,
+    smoothstep(${GPU_TUNING.lureGain}, LURE_FAST_AT, lureInterest));
   let perception2 = perception * perception;
   let cen = centroid[0].xyz;
   // The center the herd/rally/regroup drives aim for: with evade on, the
@@ -833,6 +868,35 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
     }
   }
 
+  // ---- The lure: the click's notice wave makes a few fish curious ----
+  // Each fish's threshold is static, so the same fish stay curious while
+  // the interest holds and drop out one by one as it fades.
+  let lureThr = 0.06 + 0.6 * fishHash(i, 11u);
+  if (lureWaveR >= 0.0 && mode == FLOCK && fear < 0.1 && lureInterest > lureThr) {
+    let dl = pos - lureP;
+    if (dot(dl, dl) < lureWaveR * lureWaveR && rnd(i, 90u) < 0.25
+        && atomicLoad(&lureCount[0]) < u32(lureTarget)) {
+      if (atomicAdd(&lureCount[0], 1u) < u32(lureTarget)) {
+        mode = LURE;
+      }
+    }
+  }
+
+  // The click's spark: fish it passes flash once and part a little. Depth
+  // is squashed like the pointer's, so the line runs through the sheet.
+  let sparkR = U[22].w;
+  if (sparkR > 0.0 && !fired && refract <= 0.0 && energy < CONTAGIOUS_ABOVE) {
+    let ds = pos - U[22].xyz;
+    let dsS = vec3f(ds.x, ds.y, ds.z * 0.45);
+    if (dot(dsS, dsS) < sparkR * sparkR && rnd(i, 91u) < SPARK_P) {
+      energy = 1.0;
+      fired = true;
+      pulse = U[22].xyz;
+      pulseSign = SPARK_SIGN;
+      vel += ds / max(length(ds), 1e-4) * SPARK_DART;
+    }
+  }
+
   // ---- Neighbor pass: boids accumulators + contagion pressure ----
   // Fair sampling under the neighbor cap: candidates are stratified across
   // the 27 cells by population, and the accepted neighbors are a reservoir
@@ -924,6 +988,15 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
       }
     }
   }
+  // While a lure is out, the school and its curious fish don't flock with
+  // each other: a few informed fish otherwise lead the whole body
+  // (measured: 10 clicks drew the school 3-4 u toward the cursor), and the
+  // school held the curious back to a crawl. Reads another fish's mode
+  // from selfB, which this pass also writes; a fish changing mode this
+  // frame may read either value, both of them valid. Uniform branch - free
+  // with no lure.
+  let shunLured = lureInterest > 0.0 && (mode == FLOCK || mode == LURE);
+  let iLured = mode == LURE;
   for (var k = 0u; k < min(inRange, MAX_NEIGHBORS); k++) {
     let j = picked[k];
     let jd = dynIn[j];
@@ -933,9 +1006,11 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
       let w = 1.0 - dist / sepR;
       sep -= d3 * (w * w / dist);
     }
-    coh += jd.pe.xyz;
-    aln += jd.vf.xyz;
-    found++;
+    if (!shunLured || (flagsMode(selfB[j].s2.w) == LURE) == iLured) {
+      coh += jd.pe.xyz;
+      aln += jd.vf.xyz;
+      found++;
+    }
 
     if (jd.pe.w > CONTAGIOUS_ABOVE) {
       // Contagion is weighted by the source's remaining heat (v3 counted
@@ -947,10 +1022,13 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
       // the wandering smolder does not.
       let srcHeat = (jd.pe.w - CONTAGIOUS_ABOVE) / (1.0 - CONTAGIOUS_ABOVE);
       let w = (1.0 - dist / perception) * srcHeat;
-      contagion += w;
-      if (w > bestW) {
-        bestW = w;
-        bestJ = i32(j);
+      // Spark flashes stay single: they light nobody.
+      if (jd.pu.w < 1.5) {
+        contagion += w;
+        if (w > bestW) {
+          bestW = w;
+          bestJ = i32(j);
+        }
       }
     }
     maxFear = max(maxFear, jd.vf.w);
@@ -1017,10 +1095,13 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
   // flanks (a wedge). Behind-reach is untouched — dropping aft into the
   // wake is the fountain's escape and must stay safe. uNorm is the
   // dimensionless "how deep into the danger zone" (1 = boundary).
+  // Lured fish came to look at a resting cursor; one that has moved off
+  // the click scares them.
+  let predOn = pointerOn && !(mode == LURE && U[23].y > 0.5);
   var pd = vec3f(0.0);
   var pdist = 1e9;
   var uNorm = 1e9;
-  if (pointerOn) {
+  if (predOn) {
     pd = pos - lead;
     let pdS = vec3f(pd.x, pd.y, pd.z * 0.45);
     pdist = max(length(pdS), 1e-4);
@@ -1059,7 +1140,7 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
   // full bolt: a predator, not a gravity well. smoothstep(0, 1, u) is
   // u*u*(3-2u), so bite 0 is the reference falloff exactly.
   var predFall = 0.0;
-  if (pointerOn && uNorm < 1.0) {
+  if (predOn && uNorm < 1.0) {
     predFall = 1.0 - smoothstep(bite, 1.0, uNorm);
   }
   // Lasting fear keeps the reference sphere's semantics: the wedge's long
@@ -1068,7 +1149,7 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
   // the pre-alarmed cohort ahead of a sweep — alarmed but not yet turned —
   // floods the fear population with cruise-heading fish.
   var fearFall = 0.0;
-  if (pointerOn && uNorm < 1.0) {
+  if (predOn && uNorm < 1.0) {
     let uS = uNorm;
     fearFall = 1.0 - smoothstep(bite, 1.0, uS);
   }
@@ -1078,7 +1159,7 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
   // panic spread infects) streaming out of the school before regrouping.
   // Needs the pointer for its direction; without one, fish regroup as before.
   // Contact fear lands later, but only inside threatNear, where this is moot.
-  let inFlight = flight > 0.001 && pointerOn && fearI > (1.0 - flight);
+  let inFlight = flight > 0.001 && predOn && fearI > (1.0 - flight);
 
   // After a strike, far-flung survivors commit to returning.
   if (mode == FLOCK && fearI > 0.12 && !threatNear && !inFlight) {
@@ -1143,7 +1224,7 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
     // shared wanderDir and peels off as a sub-school instead of dust. Once
     // away from the cloud their only neighbors are each other, so they
     // can still leave it (HANDOFF §4).
-    if (mode == FLOCK || mode == WANDER) {
+    if (mode != RETURN_) {
       // Cohesion with "arrival" damping (HANDOFF §4.1: without it the
       // swarm collapses into a ball).
       var t = coh / f32(found) - pos;
@@ -1218,7 +1299,7 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
   // wave away; a few fish deep, waves, holes and collapses show. A damped
   // spring in z only toward the school's mean depth. Uniform branch - free
   // at sheet 0.
-  if (sheet > 0.001 && (mode == FLOCK || mode == WANDER)) {
+  if (sheet > 0.001 && mode != RETURN_) {
     let dz = cen.z - pos.z;
     acc.z += dz * (sheet * 6.0) - vel.z * (sheet * 2.0);
   }
@@ -1275,6 +1356,28 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
       mode = RETURN_;
       modeTimer = 30.0;
     }
+  } else if (mode == LURE) {
+    // Curious: swim over to look and hold off at this fish's own distance,
+    // so the lookers gather as a loose knot; the more interest, the closer.
+    let toL = lureP - pos;
+    let dL = max(length(toL), 1e-4);
+    let stand = (0.6 + LURE_STANDOFF * fishHash(i, 12u)
+      + LURE_FAR * (1.0 - min(1.0, lureInterest / LURE_CLOSE))) * U[23].x;
+    // A per-fish rhythm in the pace, so the lookers don't move as one.
+    let osc = sin(timeT * (1.2 + 0.8 * fishHash(i, 13u)) + seed * 40.0);
+    let push = 0.7 + 0.3 * smoothstep(-0.6, 0.3, osc);
+    let want = clamp((dL - stand) / 1.5, -1.0, 1.0) * push
+      * maxSpeedBase * spdF * lureSpd;
+    acc += clampLen((toL / dL) * want - vel, MAX_FORCE) * LURE_PULL;
+    if (rCenter > farR) {
+      let over = rCenter - farR;
+      acc += -pos * ((over * over * 0.3) / rCenter);
+    }
+    // Interest gone (this fish's threshold), or a scare: home.
+    if (lureInterest < lureThr * LURE_LEAVE || fearI > 0.3) {
+      mode = RETURN_;
+      modeTimer = 30.0;
+    }
   } else {
     // RETURN — home in on the swarm centroid.
     modeTimer -= dt;
@@ -1290,7 +1393,7 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
   }
 
   // ---- Pointer: a predator to escape (fountain maneuver + wake) ----
-  if (pointerOn) {
+  if (predOn) {
     // Evade around a slow predator: blend the radial escape toward the
     // fish's own sideways momentum, so the hollow is a ring of fish
     // sliding past at speed rather than a static shell. Exactly the radial
@@ -1399,7 +1502,7 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
   }
 
   // ---- Bubble pulse: sustained radial push from the cascade epicenter ----
-  if (energy > 0.12 && kickP > 0.0) {
+  if (energy > 0.12 && kickP > 0.0 && pulseSign < 1.5) {
     let r3 = pos - pulse;
     let rd = length(r3);
     if (rd > 0.25) {
@@ -1440,7 +1543,9 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
   let sp2 = dot(vel, vel);
   // maxSpeed also feeds the steering targets; only the hard cap is raised.
   let capSpeed = maxSpeed * (1.0 + 0.8 * rallyBoost);
-  let cap = capSpeed * select(1.0, 0.85, mode == WANDER) + 0.4;
+  var capF = select(1.0, 0.85, mode == WANDER);
+  if (mode == LURE) { capF = lureSpd + 0.1; }
+  let cap = capSpeed * capF + 0.4;
   if (sp2 > cap * cap) {
     vel *= cap / sqrt(sp2);
   }
@@ -1459,6 +1564,8 @@ fn simStep(@builtin(global_invocation_id) gid: vec3u) {
     fired = false;
     refract = refractoryP;
   }
+
+  if (mode == LURE) { atomicAdd(&lureCount[2], 1u); }
 
   // ---- Write back ----
   dynOut[i] = Dyn(
